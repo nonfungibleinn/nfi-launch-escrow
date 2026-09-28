@@ -9,21 +9,57 @@ Program id: `3qRS59TJmgaNUzKjKsUe3XGggodSXA9GHU9Q5u2ffE1n`. The deploy keypair i
 
 ## Status
 
-Revision 0.1 (27 September 2026): the program and its attack-first test suite (13 cases) pass on a local validator.
-Not yet: the adversarial review rounds, devnet dual running beside the freeze guard, service integration (the permit
-builder places `pay` before `mintV1`; the studio's deploy plan adds `init`; approval compares the escrow's fields),
-mainnet. Unaudited.
+Revision 0.3 (27 September 2026): two adversarial review rounds fixed; the attack-first suite (27 cases, real Core
+Candy Machine, Candy Guard and MPL Core fixtures) passes on a local validator. Not yet: review round three, devnet
+dual running beside the freeze guard, service integration (below), mainnet. Unaudited.
 
 ## Money flow
 
 ```
-init (creator + NFI sign) ──pay×N (in each mint tx)──▶ Open ──release (anyone, after window_end)──▶ Released ──close_receipt×N, close_escrow
+init (creator + NFI sign) ──pay×N (in each mint tx)──▶ Open ──release (anyone, after window_end)──▶ Released ──release_fee (anyone) ──▶ close_receipt×N, return_collection, close_escrow
                                                         │
-                                                        └──cancel (NFI or creator)──▶ Cancelled ──refund×N (burns the asset; forever)──▶ close_escrow once every receipt is refunded
+                                                        └──cancel (NFI or creator)──▶ Cancelled ──refund×N (burns the asset; forever)──▶ return_collection, close_escrow once every receipt is refunded
 ```
 
 Decisions (owner, 27 September 2026): refunds never expire; NFI's fee is refunded on a cancel; a refund burns the
 asset in the same instruction.
+
+## What the escrow holds besides the money
+
+For the life of the escrow the launch collection's **update authority is the escrow PDA** (review 2, finding 1). The
+deploy plan hands it over one step before `init`, and `init` refuses a collection that is not under the escrow or
+that carries a permanent freeze, transfer or burn delegate or any external plugin adapter. So while a refund is still
+possible nobody can add a plugin that vetoes a burn, move an asset out of the collection, freeze it or claw it back.
+The creator's reveal (new name and URI per asset) goes through `update_asset`, which the program signs, and is refused
+after a cancel. `return_collection` hands the authority back once the escrow is final: after a release, or after a
+cancel once every receipt is refunded. A cancelled launch with one unclaimed receipt keeps its collection in escrow:
+that is the price of refunds that never expire.
+
+The Core Candy Machine keeps minting after the handover: it acts through the UpdateDelegate plugin its `initialize`
+added to the collection, not through the update authority.
+
+## Who may do what
+
+| instruction | who | when |
+| --- | --- | --- |
+| init_config | the program's upgrade authority, once, **right after the deploy** and before any authority change | |
+| update_config, propose/accept_authority | the config authority | |
+| init | creator + NFI's key (from the config) | collection handed over |
+| pay | the minter, in the mint transaction, before `mint_v1` | Open, not paused, before window_end |
+| cancel | NFI's **current** config key, or the creator | Open, before window_end |
+| set_paused | NFI's current config key | any time; blocks pay only |
+| refund | the asset's owner (burns it); anyone once it is a burned shell | Cancelled |
+| release | anyone | Open, after window_end |
+| release_fee | anyone | Released, once |
+| update_asset | the creator | not Cancelled |
+| return_collection | the creator | final |
+| close_receipt | anyone | Released |
+| close_escrow | the creator | final, fee leg done, collection returned, no open receipt |
+
+Rotating `nfi_authority` in the config revokes the old key on every live escrow at once. The payout wallet, the
+treasury, the window and the prices are fixed at init and never change. Payout and treasury must be plain system
+wallets (checked), and the two release legs are separate so a treasury that cannot take a credit can never hold the
+creator's share.
 
 ## Build and test
 
@@ -33,15 +69,28 @@ Inside WSL (the SBF toolchain does not like `/mnt/c`):
 bash ops/wsl-build.sh sync && bash ops/wsl-build.sh pin && bash ops/wsl-build.sh build && bash ops/wsl-build.sh test
 ```
 
-`--features test` shortens the minimum window to five seconds so the whole life runs in one test. Never on for a deploy.
+`--features test` shortens the minimum window to five seconds so the whole life runs in one test. Never on for a
+deploy: `bash ops/wsl-build.sh check` prints `MIN_WINDOW_SECS` from the built IDL, and it must read 3600.
+
+## Service integration (nfi-verify), still to do
+
+- Deploy plan: create collection (creator authority), create machine, `updateCollectionV1` to the escrow PDA, `init`
+  signed by creator + NFI; `pay` placed before `mintV1` in the permit builder; no Sol Payment or Sol Fixed Fee guard on
+  escrow launches (the escrow is the price).
+- Approval compares the escrow's groups, payout, window and collection to the studio build, and the collection's
+  update authority to the escrow PDA.
+- Reveal path: hidden reveals call `update_asset`, not Core directly.
+- Operator Cancel and Pause; the creator's Cancel; the minter's "refund, don't burn" UI; `return_collection` and
+  `close_escrow` on the dashboard once final.
 
 ## Layout
 
 ```
 programs/nfi_launch_escrow/src
   lib.rs            instruction list
-  state.rs          LaunchEscrow, MintReceipt, Vault, constants
-  instructions/     init, pay, admin (cancel, set_paused), refund (hand-built MPL Core BurnV1), release, close
+  state.rs          Config, LaunchEscrow, MintReceipt, Vault, constants
+  mplcore.rs        the MPL Core layouts read by hand and the hand-built BurnV1, UpdateV1, UpdateCollectionV1 CPIs
+  instructions/     config, init, pay, admin (cancel, set_paused), refund, release (+ release_fee, return_collection), reveal (update_asset), close
 tests/escrow.ts     lifecycle and attacks
-tests/fixtures      mpl_core.so (mainnet dump)
+tests/fixtures      mpl_core.so, mpl_core_candy_machine.so, mpl_core_candy_guard.so (mainnet dumps)
 ```

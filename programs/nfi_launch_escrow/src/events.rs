@@ -32,7 +32,10 @@ pub struct StatusChanged {
 pub struct Refunded {
     pub escrow: Pubkey,
     pub asset: Pubkey,
+    /// The receipt's original minter.
     pub minter: Pubkey,
+    /// Who received the money: the owner who burned, or the minter once the asset was already gone.
+    pub paid_to: Pubkey,
     pub amount: u64,
     pub burned: bool,
 }
@@ -41,6 +44,11 @@ pub struct Refunded {
 pub struct Released {
     pub escrow: Pubkey,
     pub to_payout: u64,
+}
+
+#[event]
+pub struct FeeReleased {
+    pub escrow: Pubkey,
     pub to_treasury: u64,
 }
 
@@ -48,4 +56,11 @@ pub struct Released {
 pub struct PausedChanged {
     pub escrow: Pubkey,
     pub paused: bool,
+}
+
+#[event]
+pub struct CollectionReturned {
+    pub escrow: Pubkey,
+    pub collection: Pubkey,
+    pub to: Pubkey,
 }

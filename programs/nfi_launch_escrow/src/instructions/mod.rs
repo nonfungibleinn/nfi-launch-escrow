@@ -5,6 +5,7 @@ pub mod init;
 pub mod pay;
 pub mod refund;
 pub mod release;
+pub mod reveal;
 
 pub use admin::*;
 pub use close::*;
@@ -13,6 +14,7 @@ pub use init::*;
 pub use pay::*;
 pub use refund::*;
 pub use release::*;
+pub use reveal::*;
 
 use anchor_lang::prelude::*;
 use crate::errors::EscrowError;

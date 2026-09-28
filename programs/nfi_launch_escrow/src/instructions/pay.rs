@@ -5,6 +5,7 @@ use crate::errors::EscrowError;
 use crate::events::Paid;
 use crate::state::*;
 
+#[allow(dead_code)]
 pub const CANDY_GUARD_ID: Pubkey = anchor_lang::solana_program::pubkey!("CMAGAKJ67e9hRZgfC5SFTbZH8MgEmtqazKXjmkaJjWTJ");
 /// Anchor discriminator of Core Candy Guard's mint_v1.
 const MINT_V1: [u8; 8] = [145, 98, 192, 118, 184, 147, 118, 104];

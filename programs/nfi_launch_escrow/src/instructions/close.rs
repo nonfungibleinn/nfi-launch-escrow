@@ -23,10 +23,10 @@ pub fn close_receipt(ctx: Context<CloseReceipt>) -> Result<()> {
     Ok(())
 }
 
-/// The creator, once the escrow is final (Released, or Cancelled with every receipt refunded): both accounts close and
-/// whatever the vault holds (its rent, plus any stray lamports someone sent it) goes to the creator. Nothing is owed
-/// at that point: a release paid the payout and the treasury, a cancel refunded every receipt. A cancelled escrow
-/// with an unclaimed receipt stays open, by design: refunds never expire.
+/// The creator, once the escrow is final (Released with the fee leg sent, or Cancelled with every receipt refunded), the
+/// collection returned and every receipt closed: both accounts close and whatever the vault holds (its rent, plus any
+/// stray lamports someone sent it) goes to the creator. A cancelled escrow with an unclaimed receipt stays open, by
+/// design: refunds never expire.
 #[derive(Accounts)]
 pub struct CloseEscrow<'info> {
     #[account(mut, close = creator, seeds = [ESCROW_SEED, escrow.candy_machine.as_ref()], bump = escrow.bump, has_one = creator @ EscrowError::NotCreator)]
@@ -41,5 +41,7 @@ pub fn close_escrow(ctx: Context<CloseEscrow>) -> Result<()> {
     let e = &ctx.accounts.escrow;
     require!(e.status != EscrowStatus::Open, EscrowError::NotFinal);
     require!(e.receipts_open == 0, EscrowError::ReceiptsOpen);
+    if e.status == EscrowStatus::Released { require!(e.fee_released || e.fee_in == e.fee_refunded, EscrowError::FeeNotReleased); }
+    require!(e.collection_returned, EscrowError::NotFinal);
     Ok(())
 }

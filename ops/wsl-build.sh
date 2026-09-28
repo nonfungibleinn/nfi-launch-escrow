@@ -58,6 +58,7 @@ case "$cmd" in
     echo "--- keypair pubkey:"; solana-keygen pubkey target/deploy/nfi_launch_escrow-keypair.json
     echo "--- declare_id:"; grep -o 'declare_id!("[^"]*")' programs/nfi_launch_escrow/src/lib.rs
     echo "--- .so:"; ls -la target/deploy/nfi_launch_escrow.so | awk '{print $5" bytes"}'
-    echo "--- instructions in the IDL:"; node -e 'const i=require("./target/idl/nfi_launch_escrow.json"); console.log(i.instructions.map(x=>x.name).join(" "))';;
+    echo "--- instructions in the IDL:"; node -e 'const i=require("./target/idl/nfi_launch_escrow.json"); console.log(i.instructions.map(x=>x.name).join(" "))'
+    echo "--- MIN_WINDOW_SECS in the IDL (3600 = production build, 5 = test build):"; node -e 'const i=require("./target/idl/nfi_launch_escrow.json"); console.log((i.constants||[]).filter(c=>c.name==="MIN_WINDOW_SECS").map(c=>c.value).join(","))';;
   *) echo "unknown command $cmd"; exit 2;;
 esac

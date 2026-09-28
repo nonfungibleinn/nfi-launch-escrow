@@ -18,15 +18,17 @@ pub enum EscrowError {
     NotOpen,
     #[msg("The escrow is not cancelled")]
     NotCancelled,
+    #[msg("The escrow is not released")]
+    NotReleased,
     #[msg("The window has not ended")]
     WindowNotOver,
     #[msg("The window has ended")]
     WindowOver,
     #[msg("Window out of bounds")]
     BadWindow,
-    #[msg("Between one and eight groups, each with a distinct label")]
+    #[msg("Between one and eight groups, each with a distinct, zero-padded label")]
     BadGroups,
-    #[msg("Payout and treasury must be plain wallets, not this escrow's accounts")]
+    #[msg("Payout and treasury must be plain system wallets, not programs, sysvars or this escrow's accounts")]
     BadWallet,
     #[msg("No such group")]
     BadGroup,
@@ -36,12 +38,22 @@ pub enum EscrowError {
     MintNotFound,
     #[msg("Already refunded")]
     AlreadyRefunded,
-    #[msg("The asset does not belong to this launch's collection")]
-    AssetNotInCollection,
+    #[msg("The collection account passed is not the asset's collection")]
+    WrongCollection,
     #[msg("The asset account is neither a live MPL Core asset nor a burned one")]
     AssetUnreadable,
+    #[msg("The MPL Core account is not what the program expects")]
+    CoreUnreadable,
+    #[msg("The collection's update authority must be this escrow before init")]
+    CollectionNotEscrowed,
+    #[msg("The collection carries a permanent delegate or an external plugin adapter")]
+    CollectionPluginRefused,
     #[msg("Receipts are still open")]
     ReceiptsOpen,
+    #[msg("The fee has not been released yet")]
+    FeeNotReleased,
+    #[msg("Already released")]
+    AlreadyReleased,
     #[msg("The vault does not hold that much")]
     InsufficientVault,
     #[msg("The escrow is not final")]
