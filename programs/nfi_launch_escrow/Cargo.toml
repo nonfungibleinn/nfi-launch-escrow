@@ -1,0 +1,28 @@
+[package]
+name = "nfi_launch_escrow"
+version = "0.1.0"
+description = "NFI Launchpad escrow: mint payments held per launch until the window ends; refunds with a burn if the launch is cancelled; release anyone can send."
+edition = "2021"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "nfi_launch_escrow"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+# Shortens the minimum window so the full lifecycle runs in a local test. Never on for a deploy.
+test = []
+
+[dependencies]
+anchor-lang = { version = "0.31.1" }
+# MPL Core's Rust client is not linked: one of its deserialisers overflows the SBF stack frame (learned on nfi_raffle).
+# The one Core instruction this program sends, BurnV1, is built by hand in instructions/refund.rs.
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))', 'cfg(feature, values("custom-heap", "custom-panic", "anchor-debug"))'] }
