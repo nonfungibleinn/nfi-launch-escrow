@@ -33,6 +33,8 @@ describe("nfi_launch_escrow", () => {
   const treasury = Keypair.generate();
   const airdrop = async (pk: PublicKey, sol = 10) => { const sig = await conn.requestAirdrop(pk, sol * LAMPORTS_PER_SOL); await conn.confirmTransaction(sig, "confirmed"); };
   const bal = (pk: PublicKey) => conn.getBalance(pk, "confirmed");
+  // MPL Core does not delete a burned asset; it leaves a one-byte shell whose key byte is 0 (Uninitialized).
+  const burned = async (pk: PublicKey) => { const a = await conn.getAccountInfo(pk, "confirmed"); return a === null || a.data.length < 2 || a.data[0] === 0; };
   const pdas = (cm: PublicKey) => {
     const [escrow] = PublicKey.findProgramAddressSync([Buffer.from("launch"), cm.toBuffer()], program.programId);
     const [vault] = PublicKey.findProgramAddressSync([Buffer.from("vault"), escrow.toBuffer()], program.programId);
@@ -42,7 +44,7 @@ describe("nfi_launch_escrow", () => {
   const fails = async (p: Promise<unknown>, needle: string) => { try { await p; } catch (e: any) { const m = String(e.message ?? e) + JSON.stringify(e.logs ?? []); expect(m, `expected "${needle}" in: ${m.slice(0, 300)}`).to.include(needle); return; } expect.fail(`expected failure: ${needle}`); };
 
   // Core: a collection the creator owns, and assets minted straight to a minter (what the candy machine would do).
-  const umi = createUmi(conn.rpcEndpoint).use(mplCore());
+  const umi = createUmi(conn.rpcEndpoint, { commitment: "confirmed" }).use(mplCore());
   umi.use(keypairIdentity(fromWeb3JsKeypair(creator)));
   let collection: PublicKey;
   let otherCollection: PublicKey;
@@ -70,6 +72,7 @@ describe("nfi_launch_escrow", () => {
 
   before(async () => {
     await Promise.all([airdrop(creator.publicKey, 20), airdrop(nfi.publicKey, 2), airdrop(minterA.publicKey), airdrop(minterB.publicKey), airdrop(stranger.publicKey, 2), airdrop(payout.publicKey, 1), airdrop(treasury.publicKey, 1)]);
+    for (let i = 0; i < 40 && (await bal(creator.publicKey)) === 0; i++) await sleep(250);
     const c1 = generateSigner(umi), c2 = generateSigner(umi);
     await createCoreCollection(umi, { collection: c1, name: "Launch", uri: "https://launch.nfinn.io/spike/1.json" }).sendAndConfirm(umi);
     await createCoreCollection(umi, { collection: c2, name: "Other", uri: "https://launch.nfinn.io/spike/1.json" }).sendAndConfirm(umi);
@@ -179,18 +182,18 @@ describe("nfi_launch_escrow", () => {
       await refund(escrow, vault, assetA.key, minterA.publicKey, minterA);
       const m1 = await bal(minterA.publicKey);
       expect(m1 - m0).to.be.greaterThan(SOL(0.5).toNumber()); // price + fee + receipt rent, minus the network fee
-      expect(await conn.getAccountInfo(assetA.key)).to.equal(null);
+      expect(await burned(assetA.key)).to.equal(true);
       await fails(refund(escrow, vault, assetA.key, minterA.publicKey, minterA), "AccountNotInitialized");
     });
     it("an asset from another collection cannot be refunded here", async () => {
       await fails(refund(escrow, vault, foreign.key, minterA.publicKey, minterA), "AssetNotInCollection");
     });
     it("once the owner burned the asset themselves, anyone may crank the refund to the minter", async () => {
-      const umiB = createUmi(conn.rpcEndpoint).use(mplCore()).use(keypairIdentity(fromWeb3JsKeypair(minterB)));
+      const umiB = createUmi(conn.rpcEndpoint, { commitment: "confirmed" }).use(mplCore()).use(keypairIdentity(fromWeb3JsKeypair(minterB)));
       const c = await (await import("@metaplex-foundation/mpl-core")).fetchCollection(umiB, umiPk(collection.toBase58()));
       const asset = await fetchAsset(umiB, umiPk(assetB.key.toBase58()));
       await coreBurn(umiB, { asset, collection: c }).sendAndConfirm(umiB);
-      expect(await conn.getAccountInfo(assetB.key)).to.equal(null);
+      expect(await burned(assetB.key)).to.equal(true);
       const b0 = await bal(minterB.publicKey);
       await refund(escrow, vault, assetB.key, minterB.publicKey, stranger);
       expect((await bal(minterB.publicKey)) - b0).to.be.greaterThan(SOL(1.02).toNumber());

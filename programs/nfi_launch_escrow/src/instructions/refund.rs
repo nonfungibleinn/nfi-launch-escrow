@@ -47,7 +47,9 @@ pub fn refund(ctx: Context<Refund>) -> Result<()> {
     let r = &ctx.accounts.receipt;
     require!(!r.refunded, EscrowError::AlreadyRefunded);
     let asset = &ctx.accounts.asset;
-    let exists = asset.lamports() > 0 && asset.data_len() > 0 && *asset.owner == MPL_CORE_ID;
+    // A burned Core asset is not deleted: MPL Core leaves a one-byte shell whose key is Uninitialized (0). An asset that
+    // still exists has key AssetV1 (1) and the full header. Anything else owned by Core counts as gone.
+    let exists = *asset.owner == MPL_CORE_ID && asset.data_len() >= 66 && asset.try_borrow_data()?[0] == 1;
     let mut burned = false;
     if exists {
         // The asset must be this minter's and this launch's, read straight from what MPL Core wrote:
