@@ -37,6 +37,10 @@ case "$cmd" in
   build)
     cd "$DST" && anchor build -- --features test 2>&1 | grep -E -e '^error' -e '^warning' -e 'failed to parse' -e 'Finished' -e 'Compiling nfi_launch' -e '\-\-> ' | head -40
     ls -la target/deploy/*.so target/idl/*.json 2>/dev/null;;
+  build-release)
+    # The PRODUCTION program: no test feature (a one-hour minimum window). Copied to the Windows checkout as target/deploy/nfi_launch_escrow.prod.so.
+    cd "$DST" && anchor build 2>&1 | grep -E -e "^error" -e "Finished" | head -5
+    cp target/deploy/nfi_launch_escrow.so "$SRC/target/deploy/nfi_launch_escrow.prod.so" && ls -la "$SRC/target/deploy/nfi_launch_escrow.prod.so" | awk '{print $5" bytes"}';;
   test)
     cd "$DST"
     pkill -f "solana-test-validator" 2>/dev/null; sleep 1

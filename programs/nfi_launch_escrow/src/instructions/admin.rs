@@ -3,7 +3,8 @@ use crate::errors::EscrowError;
 use crate::events::{PausedChanged, StatusChanged};
 use crate::state::*;
 
-/// NFI's authority or the creator, while Open. From here every receipt may be refunded, and nothing can ever be released.
+/// NFI's authority or the creator, while Open and before the window ends. From here every receipt may be refunded,
+/// and nothing can ever be released. After window_end a cancel is impossible: release is a promise (review 1, finding 8).
 #[derive(Accounts)]
 pub struct Cancel<'info> {
     #[account(mut, seeds = [ESCROW_SEED, escrow.candy_machine.as_ref()], bump = escrow.bump)]
@@ -12,13 +13,15 @@ pub struct Cancel<'info> {
 }
 
 pub fn cancel(ctx: Context<Cancel>) -> Result<()> {
+    let now = Clock::get()?.unix_timestamp;
     let e = &mut ctx.accounts.escrow;
     require!(e.status == EscrowStatus::Open, EscrowError::NotOpen);
+    require!(now < e.window_end, EscrowError::WindowOver);
     let who = ctx.accounts.signer.key();
     let by = if who == e.nfi_authority { CancelledBy::Nfi } else if who == e.creator { CancelledBy::Creator } else { return err!(EscrowError::NotNfi) };
     e.status = EscrowStatus::Cancelled;
     e.cancelled_by = by;
-    e.cancelled_at = Clock::get()?.unix_timestamp;
+    e.cancelled_at = now;
     emit!(StatusChanged { escrow: e.key(), status: EscrowStatus::Cancelled, by });
     Ok(())
 }

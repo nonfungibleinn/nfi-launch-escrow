@@ -1,12 +1,25 @@
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::sysvar::instructions::{load_current_index_checked, load_instruction_at_checked};
 use anchor_lang::system_program::{transfer, Transfer};
 use crate::errors::EscrowError;
 use crate::events::Paid;
 use crate::state::*;
 
-/// Sent by the minter in the same transaction as the mint, before it. The asset key is the mint's asset signer, so the
-/// receipt's address is the asset's: no asset can be paid for twice, and a payment cannot exist without its mint
-/// (the transaction is atomic). The amount must be exactly the group's price plus fee.
+pub const CANDY_GUARD_ID: Pubkey = anchor_lang::solana_program::pubkey!("CMAGAKJ67e9hRZgfC5SFTbZH8MgEmtqazKXjmkaJjWTJ");
+/// Anchor discriminator of Core Candy Guard's mint_v1.
+const MINT_V1: [u8; 8] = [145, 98, 192, 118, 184, 147, 118, 104];
+/// mint_v1's account positions: candy_guard, candy_machine_program, candy_machine, authority pda, payer, minter, owner, asset, collection.
+const IX_CANDY_GUARD: usize = 0;
+const IX_CANDY_MACHINE: usize = 2;
+const IX_MINTER: usize = 5;
+const IX_ASSET: usize = 7;
+const IX_COLLECTION: usize = 8;
+
+/// Sent by the minter in the same transaction as the mint, before it. Review 1, finding 1: the transaction's shape is
+/// not trusted. The program reads the instructions sysvar and requires a Core Candy Guard mint_v1 later in this same
+/// transaction that mints THIS asset, from THIS escrow's machine and guard, into THIS escrow's collection, to THIS
+/// minter, in the group whose label matches the group paid for. The asset signs (the mint needs its signature anyway),
+/// so nobody can pay for someone else's pending asset first. The transaction is atomic: no mint, no payment.
 #[derive(Accounts)]
 pub struct Pay<'info> {
     #[account(mut, seeds = [ESCROW_SEED, escrow.candy_machine.as_ref()], bump = escrow.bump)]
@@ -15,10 +28,13 @@ pub struct Pay<'info> {
     pub vault: Account<'info, Vault>,
     #[account(init, payer = minter, space = 8 + MintReceipt::INIT_SPACE, seeds = [RECEIPT_SEED, escrow.key().as_ref(), asset.key().as_ref()], bump)]
     pub receipt: Account<'info, MintReceipt>,
-    /// CHECK: the asset the mint creates later in this transaction; only its address is used here.
-    pub asset: UncheckedAccount<'info>,
+    /// The asset the mint creates later in this transaction. It signs, as it must for the mint.
+    pub asset: Signer<'info>,
     #[account(mut)]
     pub minter: Signer<'info>,
+    /// CHECK: the instructions sysvar, address checked.
+    #[account(address = anchor_lang::solana_program::sysvar::instructions::ID)]
+    pub instructions: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
 }
 
@@ -31,6 +47,32 @@ pub fn pay(ctx: Context<Pay>, group: u8, amount: u64) -> Result<()> {
     let g = *e.groups.get(group as usize).ok_or(EscrowError::BadGroup)?;
     let due = g.price.checked_add(g.fee).ok_or(EscrowError::Overflow)?;
     require!(amount == due, EscrowError::BadAmount);
+    // The mint that this payment is for must follow in this transaction.
+    let ixs = ctx.accounts.instructions.to_account_info();
+    let me = load_current_index_checked(&ixs)? as usize;
+    let mut found = false;
+    let mut i = me + 1;
+    while let Ok(ix) = load_instruction_at_checked(i, &ixs) {
+        i += 1;
+        if ix.program_id != CANDY_GUARD_ID || ix.data.len() < 8 || ix.data[..8] != MINT_V1 || ix.accounts.len() <= IX_COLLECTION { continue; }
+        let a = &ix.accounts;
+        if a[IX_CANDY_GUARD].pubkey != e.candy_guard || a[IX_CANDY_MACHINE].pubkey != e.candy_machine || a[IX_ASSET].pubkey != ctx.accounts.asset.key()
+            || a[IX_MINTER].pubkey != ctx.accounts.minter.key() || a[IX_COLLECTION].pubkey != e.collection { continue; }
+        // data: discriminator(8) | mint_args: u32 len + bytes | group: Option<String> = tag(1) [+ u32 len + bytes]
+        let d = &ix.data[8..];
+        let args_len = u32::from_le_bytes(d.get(0..4).ok_or(EscrowError::MintNotFound)?.try_into().unwrap()) as usize;
+        let mut o = 4 + args_len;
+        let tag = *d.get(o).ok_or(EscrowError::MintNotFound)?;
+        o += 1;
+        let label: &[u8] = if tag == 0 { &[] } else {
+            let n = u32::from_le_bytes(d.get(o..o + 4).ok_or(EscrowError::MintNotFound)?.try_into().unwrap()) as usize;
+            d.get(o + 4..o + 4 + n).ok_or(EscrowError::MintNotFound)?
+        };
+        if label != g.label_bytes() { continue; }
+        found = true;
+        break;
+    }
+    require!(found, EscrowError::MintNotFound);
     transfer(CpiContext::new(ctx.accounts.system_program.to_account_info(), Transfer { from: ctx.accounts.minter.to_account_info(), to: ctx.accounts.vault.to_account_info() }), due)?;
     e.price_in = e.price_in.checked_add(g.price).ok_or(EscrowError::Overflow)?;
     e.fee_in = e.fee_in.checked_add(g.fee).ok_or(EscrowError::Overflow)?;

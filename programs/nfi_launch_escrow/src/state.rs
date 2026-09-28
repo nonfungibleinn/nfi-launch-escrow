@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
 
+pub const CONFIG_SEED: &[u8] = b"config";
 pub const ESCROW_SEED: &[u8] = b"launch";
 pub const VAULT_SEED: &[u8] = b"vault";
 pub const RECEIPT_SEED: &[u8] = b"receipt";
@@ -12,6 +13,19 @@ pub const MIN_WINDOW_SECS: i64 = 5;
 pub const MIN_WINDOW_SECS: i64 = 3600;
 /// The longest window: ninety days. A creator's money is never held longer than that by this program.
 pub const MAX_WINDOW_SECS: i64 = 90 * 86400;
+
+/// Program-wide: NFI's signer and treasury, set by the upgrade authority once and rotated by the config authority.
+#[account]
+#[derive(InitSpace)]
+pub struct Config {
+    pub authority: Pubkey,
+    pub pending_authority: Option<Pubkey>,
+    /// Co-signs every escrow's init; may cancel and pause any escrow.
+    pub nfi_authority: Pubkey,
+    /// Receives the fee share on release.
+    pub treasury: Pubkey,
+    pub bump: u8,
+}
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, InitSpace, Debug, PartialEq, Eq)]
 pub enum EscrowStatus {
@@ -30,12 +44,20 @@ pub enum CancelledBy {
     Nfi,
 }
 
-/// A phase's price and NFI's fee on it, fixed at init. The label matches the candy guard group.
+/// A phase's price and NFI's fee on it, fixed at init. The label is the candy guard group's label, zero padded.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, InitSpace, Debug, PartialEq, Eq)]
 pub struct Group {
     pub label: [u8; 6],
     pub price: u64,
     pub fee: u64,
+}
+
+impl Group {
+    /// The label without its zero padding, as the guard sees it.
+    pub fn label_bytes(&self) -> &[u8] {
+        let end = self.label.iter().position(|b| *b == 0).unwrap_or(self.label.len());
+        &self.label[..end]
+    }
 }
 
 /// One launch's escrow, at seeds ["launch", candy_machine]. Owns the vault; only this program moves its lamports.
@@ -48,15 +70,15 @@ pub struct LaunchEscrow {
     pub creator: Pubkey,
     /// Receives the price share on release. Fixed at init, never changed.
     pub payout: Pubkey,
-    /// NFI: may cancel and pause. Can never receive funds from this program.
+    /// NFI's signer at init (from the config). May cancel and pause. Never receives funds from this program.
     pub nfi_authority: Pubkey,
-    /// Receives the fee share on release, and only then.
+    /// The treasury at init (from the config). Receives the fee share on release, and only then.
     pub treasury: Pubkey,
     pub candy_machine: Pubkey,
     pub candy_guard: Pubkey,
-    /// The collection every refunded asset must belong to.
+    /// The collection every paid and refunded asset must belong to.
     pub collection: Pubkey,
-    /// Unix time after which anyone may release. Immutable.
+    /// Unix time after which anyone may release. Immutable. A cancel is only possible before it.
     pub window_end: i64,
     pub status: EscrowStatus,
     pub cancelled_by: CancelledBy,

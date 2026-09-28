@@ -35,5 +35,14 @@ upgradeable = true
 address = "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d"
 program = "tests/fixtures/mpl_core.so"
 
+# Core Candy Machine and Candy Guard, dumped from mainnet: pay must find the guard's mint_v1 in its own transaction.
+[[test.genesis]]
+address = "CMACYFENjoBMHzapRXyo1JZkVS6EtaDDzkjMrmQLvr4J"
+program = "tests/fixtures/mpl_core_candy_machine.so"
+
+[[test.genesis]]
+address = "CMAGAKJ67e9hRZgfC5SFTbZH8MgEmtqazKXjmkaJjWTJ"
+program = "tests/fixtures/mpl_core_candy_guard.so"
+
 [test.validator]
 bind_address = "127.0.0.1"
