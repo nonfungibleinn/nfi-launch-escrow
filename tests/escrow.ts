@@ -2,11 +2,13 @@
 // --features test (a 5 s minimum window). Every payment travels in the same transaction as the guard's mint_v1, the way
 // NFI's permit builder sends it. The happy path and every attack the design and the reviews list: a payment with no
 // mint, after the mint, with another asset's mint, for another minter, in another group, from another machine or into
-// another collection; wrong amounts; paused; late pay; the squat; a collection not handed over or carrying a permanent
-// delegate; early release; the wrong payout or treasury at release; cancel after the window; wrong-party cancel and
+// another collection; wrong amounts; paused; late pay; the squat; a machine of another collection; a collection whose
+// authority is not the creator, or carrying a permanent delegate, an external adapter, an extra update delegate or an
+// update delegate the creator kept; a frozen asset's refund (fails cleanly, works after the thaw); early release; the wrong payout or treasury at release; cancel after the window; wrong-party cancel and
 // pause; NFI's key rotation revoking the old key on a live escrow; refunds by strangers, by the current owner after a
-// transfer, and the crank on a burned shell; the creator's reveal through the program; the collection's authority
-// coming back only when the escrow is final; closing with an unclaimed receipt; stray lamports.
+// transfer, by the owner of a mint paid by someone else, and the crank on a burned shell; the creator's reveal through
+// the program; the collection's authority coming back (by anyone) only when the escrow is final; closing with an
+// unclaimed receipt; a receipt closed twice; stray lamports; the config authority handover.
 import * as anchor from "@coral-xyz/anchor";
 import { Program, BN } from "@coral-xyz/anchor";
 import { Keypair, PublicKey, SystemProgram, LAMPORTS_PER_SOL, SYSVAR_INSTRUCTIONS_PUBKEY } from "@solana/web3.js";
@@ -14,8 +16,8 @@ import { createUmi } from "@metaplex-foundation/umi-bundle-defaults";
 import { generateSigner, keypairIdentity, publicKey as umiPk, some, none, transactionBuilder, type Umi, type KeypairSigner } from "@metaplex-foundation/umi";
 import { fromWeb3JsKeypair, fromWeb3JsInstruction, toWeb3JsPublicKey } from "@metaplex-foundation/umi-web3js-adapters";
 import { setComputeUnitLimit } from "@metaplex-foundation/mpl-toolbox";
-import { burn as coreBurn, transfer as coreTransfer, update as coreUpdate, createCollection as createCoreCollection, fetchAsset, fetchCollection, mplCore, updateCollectionV1 } from "@metaplex-foundation/mpl-core";
-import { addConfigLines, create as createMachine, findCandyGuardPda, mintV1, mplCandyMachine } from "@metaplex-foundation/mpl-core-candy-machine";
+import { addPlugin, approveCollectionPluginAuthority, burn as coreBurn, CheckResult, transfer as coreTransfer, update as coreUpdate, updatePlugin, updateCollectionPlugin, createCollection as createCoreCollection, fetchAsset, fetchCollection, mplCore, updateCollectionV1 } from "@metaplex-foundation/mpl-core";
+import { addConfigLines, create as createMachine, findCandyGuardPda, findCandyMachineAuthorityPda, mintV1, mplCandyMachine } from "@metaplex-foundation/mpl-core-candy-machine";
 import { expect } from "chai";
 import type { NfiLaunchEscrow } from "../target/types/nfi_launch_escrow";
 
@@ -60,7 +62,7 @@ describe("nfi_launch_escrow", () => {
 
   type Machine = { cm: PublicKey; guard: PublicKey; collection: PublicKey };
   /** A collection and a Core candy machine with two guard groups (wl, pub) and NO payment guards: the escrow is the price. */
-  const buildMachine = async (items = 6, plugins: any[] = []): Promise<Machine> => {
+  const buildMachine = async (items = 6, plugins: any[] = [], after?: (m: Machine) => Promise<void>): Promise<Machine> => {
     const coll = generateSigner(umiCreator);
     await createCoreCollection(umiCreator, { collection: coll, name: "Launch", uri: "https://launch.nfinn.io/spike/1.json", plugins }).sendAndConfirm(umiCreator);
     const cm = generateSigner(umiCreator);
@@ -71,22 +73,24 @@ describe("nfi_launch_escrow", () => {
     });
     await b.sendAndConfirm(umiCreator);
     await addConfigLines(umiCreator, { candyMachine: cm.publicKey, index: 0, configLines: Array.from({ length: items }, (_, i) => ({ name: String(i + 1), uri: `${(i % 5) + 1}.json` })) }).sendAndConfirm(umiCreator);
-    return { cm: toWeb3JsPublicKey(cm.publicKey), guard: toWeb3JsPublicKey(findCandyGuardPda(umiCreator, { base: cm.publicKey })[0]), collection: toWeb3JsPublicKey(coll.publicKey) };
+    const m: Machine = { cm: toWeb3JsPublicKey(cm.publicKey), guard: toWeb3JsPublicKey(findCandyGuardPda(umiCreator, { base: cm.publicKey })[0]), collection: toWeb3JsPublicKey(coll.publicKey) };
+    if (after) await after(m);
+    return m;
   };
-  /** The deploy plan's step before init: the creator hands the collection's update authority to the escrow PDA. */
-  const handOver = (m: Machine, to = pdas(m.cm).escrow) =>
+  const cmAuthorityPda = (m: Machine) => findCandyMachineAuthorityPda(umiCreator, { candyMachine: umiPk(m.cm.toBase58()) })[0];
+  /** Gives the collection to somebody else (init itself does the handover to the escrow). */
+  const handOver = (m: Machine, to: PublicKey) =>
     updateCollectionV1(umiCreator, { collection: umiPk(m.collection.toBase58()), newUpdateAuthority: umiPk(to.toBase58()), newName: none(), newUri: none() }).sendAndConfirm(umiCreator);
   const collectionAuthority = async (m: Machine) => (await fetchCollection(umiCreator, umiPk(m.collection.toBase58()))).updateAuthority.toString();
   const groups = [{ label: label("wl"), price: SOL(0.5), fee: SOL(0.01) }, { label: label("pub"), price: SOL(1), fee: SOL(0.02) }];
-  const initEscrow = async (m: Machine, windowEnd: number, o: { nfiSigner?: Keypair; gs?: typeof groups; payout?: PublicKey; noHandover?: boolean } = {}) => {
-    const { escrow, vault } = pdas(m.cm);
-    if (!o.noHandover && (await collectionAuthority(m)) !== escrow.toBase58()) await handOver(m);
-    await program.methods.init({ candyGuard: m.guard, windowEnd: new BN(windowEnd), groups: o.gs ?? groups })
-      .accounts({ config: configPda, escrow, vault, candyMachine: m.cm, collection: m.collection, payout: o.payout ?? payout.publicKey, creator: creator.publicKey, nfiAuthority: (o.nfiSigner ?? nfi).publicKey, systemProgram: SystemProgram.programId })
+  const initEscrow = async (m: Machine, windowEnd: number, o: { nfiSigner?: Keypair; gs?: typeof groups; payout?: PublicKey; machine?: PublicKey } = {}) => {
+    const { escrow, vault } = pdas(o.machine ?? m.cm);
+    await program.methods.init({ windowEnd: new BN(windowEnd), groups: o.gs ?? groups })
+      .accounts({ config: configPda, escrow, vault, candyMachine: o.machine ?? m.cm, collection: m.collection, payout: o.payout ?? payout.publicKey, creator: creator.publicKey, nfiAuthority: (o.nfiSigner ?? nfi).publicKey, mplCoreProgram: CORE, systemProgram: SystemProgram.programId })
       .signers([creator, o.nfiSigner ?? nfi]).rpc();
     return { escrow, vault };
   };
-  type MintOpts = { payGroup?: number; mintGroup?: string; amount?: BN; payAsset?: KeypairSigner; withPay?: boolean; withMint?: boolean; mintMachine?: Machine; mintCollection?: PublicKey; payAfter?: boolean; mintMinter?: Keypair };
+  type MintOpts = { payGroup?: number; mintGroup?: string; amount?: BN; payAsset?: KeypairSigner; withPay?: boolean; withMint?: boolean; mintMachine?: Machine; mintCollection?: PublicKey; payAfter?: boolean; mintMinter?: Keypair; owner?: PublicKey };
   /** The mint transaction as the permit builder sends it: compute budget, pay, mint_v1. Returns the asset. */
   const mint = async (umi: Umi, minter: Keypair, m: Machine, escrow: PublicKey, vault: PublicKey, o: MintOpts = {}) => {
     const asset = generateSigner(umi);
@@ -103,7 +107,7 @@ describe("nfi_launch_escrow", () => {
     if (o.withMint !== false) {
       const mm = o.mintMachine ?? m;
       const mintMinter = o.mintMinter ? { minter: (umiFor(o.mintMinter)).identity } : {};
-      b = b.add(mintV1(umi, { candyMachine: umiPk(mm.cm.toBase58()), candyGuard: umiPk(mm.guard.toBase58()), collection: umiPk((o.mintCollection ?? mm.collection).toBase58()), asset, ...mintMinter, group: o.mintGroup === "" ? none() : some(o.mintGroup ?? "pub"), mintArgs: {} }));
+      b = b.add(mintV1(umi, { candyMachine: umiPk(mm.cm.toBase58()), candyGuard: umiPk(mm.guard.toBase58()), collection: umiPk((o.mintCollection ?? mm.collection).toBase58()), asset, ...mintMinter, ...(o.owner ? { owner: umiPk(o.owner.toBase58()) } : {}), group: o.mintGroup === "" ? none() : some(o.mintGroup ?? "pub"), mintArgs: {} }));
     }
     if (o.withPay !== false && o.payAfter) b = b.add(await payIx());
     await b.sendAndConfirm(umi);
@@ -117,8 +121,8 @@ describe("nfi_launch_escrow", () => {
     program.methods.releaseFee().accounts({ escrow, vault, treasury: to, signer: signer.publicKey }).signers([signer]).rpc();
   const cancel = (escrow: PublicKey, signer: Keypair) => program.methods.cancel().accounts({ config: configPda, escrow, signer: signer.publicKey }).signers([signer]).rpc();
   const setPaused = (escrow: PublicKey, paused: boolean, signer: Keypair) => program.methods.setPaused(paused).accounts({ config: configPda, escrow, nfiAuthority: signer.publicKey }).signers([signer]).rpc();
-  const returnCollection = (escrow: PublicKey, m: Machine, signer = creator) =>
-    program.methods.returnCollection().accounts({ escrow, collection: m.collection, creator: signer.publicKey, mplCoreProgram: CORE, systemProgram: SystemProgram.programId }).signers([signer]).rpc();
+  const returnCollection = (escrow: PublicKey, m: Machine, signer = stranger, to = creator.publicKey) =>
+    program.methods.returnCollection().accounts({ escrow, collection: m.collection, creator: to, payer: signer.publicKey, mplCoreProgram: CORE, systemProgram: SystemProgram.programId }).signers([signer]).rpc();
   const updateAsset = (escrow: PublicKey, m: Machine, asset: PublicKey, name: string | null, uri: string | null, signer = creator) =>
     program.methods.updateAsset(name, uri).accounts({ escrow, asset, collection: m.collection, creator: signer.publicKey, mplCoreProgram: CORE, systemProgram: SystemProgram.programId }).signers([signer]).rpc();
   const closeEscrow = (escrow: PublicKey, vault: PublicKey, signer = creator) => program.methods.closeEscrow().accounts({ escrow, vault, creator: signer.publicKey }).signers([signer]).rpc();
@@ -143,6 +147,18 @@ describe("nfi_launch_escrow", () => {
       await fails(program.methods.updateConfig(nfi.publicKey).accounts({ config: configPda, authority: stranger.publicKey, treasury: treasury.publicKey }).signers([stranger]).rpc(), "NotAuthority");
       await fails(program.methods.updateConfig(nfi.publicKey).accounts({ config: configPda, authority: authority.publicKey, treasury: configPda }).rpc(), "BadWallet");
     });
+    it("the authority moves in two steps: only the proposed key may accept, and the old one is then refused", async () => {
+      await fails(program.methods.acceptAuthority().accounts({ config: configPda, newAuthority: stranger.publicKey }).signers([stranger]).rpc(), "NotAuthority");
+      await program.methods.proposeAuthority(stranger.publicKey).accounts({ config: configPda, authority: authority.publicKey }).rpc();
+      await fails(program.methods.acceptAuthority().accounts({ config: configPda, newAuthority: nfi.publicKey }).signers([nfi]).rpc(), "NotAuthority");
+      await program.methods.acceptAuthority().accounts({ config: configPda, newAuthority: stranger.publicKey }).signers([stranger]).rpc();
+      await fails(program.methods.proposeAuthority(null).accounts({ config: configPda, authority: authority.publicKey }).rpc(), "NotAuthority");
+      await program.methods.proposeAuthority(authority.publicKey).accounts({ config: configPda, authority: stranger.publicKey }).signers([stranger]).rpc();
+      await program.methods.acceptAuthority().accounts({ config: configPda, newAuthority: authority.publicKey }).rpc();
+      const c = await program.account.config.fetch(configPda);
+      expect(c.authority.toBase58()).to.equal(authority.publicKey.toBase58());
+      expect(c.pendingAuthority).to.equal(null);
+    });
   });
 
   describe("init", () => {
@@ -161,15 +177,40 @@ describe("nfi_launch_escrow", () => {
       await fails(initEscrow(m, now() + 60, { payout: pdas(m.cm).vault }), "BadWallet");
       await fails(initEscrow(m, now() + 60, { payout: configPda }), "BadWallet");
     });
-    it("refuses a collection still under the creator's update authority", async () => {
+    it("refuses a collection whose update authority is not the creator, and a machine that is not this collection's", async () => {
       const m2 = await buildMachine(1);
-      await fails(initEscrow(m2, now() + 60, { noHandover: true }), "CollectionNotEscrowed");
+      await handOver(m2, stranger.publicKey);
+      await fails(initEscrow(m2, now() + 60), "CollectionNotCreators");
+      const m3 = await buildMachine(1);
+      await fails(initEscrow(m3, now() + 60, { machine: m.cm }), "BadMachine"); // m's machine, m3's collection
+      await fails(initEscrow(m3, now() + 60, { machine: configPda }), "BadMachine"); // not a machine at all
     });
-    it("refuses a collection with a permanent freeze delegate, and one with a permanent transfer delegate", async () => {
-      const m3 = await buildMachine(1, [{ type: "PermanentFreezeDelegate", frozen: false }]);
-      await fails(initEscrow(m3, now() + 60), "CollectionPluginRefused");
-      const m4 = await buildMachine(1, [{ type: "PermanentTransferDelegate" }]);
-      await fails(initEscrow(m4, now() + 60), "CollectionPluginRefused");
+    it("refuses every permanent delegate and any external adapter on the collection", async () => {
+      for (const plugin of [{ type: "PermanentFreezeDelegate", frozen: false }, { type: "PermanentTransferDelegate" }, { type: "PermanentBurnDelegate" }]) {
+        const mx = await buildMachine(1, [plugin]);
+        await fails(initEscrow(mx, now() + 60), "CollectionPluginRefused");
+      }
+      const oracle = { type: "Oracle", resultsOffset: { type: "Anchor" }, baseAddress: umiPk(Keypair.generate().publicKey.toBase58()), lifecycleChecks: { burn: [CheckResult.CAN_REJECT] } };
+      const mo = await buildMachine(1, [oracle]);
+      await fails(initEscrow(mo, now() + 60), "CollectionPluginRefused");
+    });
+    it("refuses an update delegate the creator kept: an extra additional delegate, or the plugin under the creator's own key", async () => {
+      const extra = await buildMachine(1, [], async (mx) => {
+        await updateCollectionPlugin(umiCreator, { collection: umiPk(mx.collection.toBase58()), plugin: { type: "UpdateDelegate", additionalDelegates: [cmAuthorityPda(mx), umiPk(creator.publicKey.toBase58())] } }).sendAndConfirm(umiCreator);
+      });
+      await fails(initEscrow(extra, now() + 60), "CollectionPluginRefused");
+      const kept = await buildMachine(1, [], async (mx) => {
+        await approveCollectionPluginAuthority(umiCreator, { collection: umiPk(mx.collection.toBase58()), plugin: { type: "UpdateDelegate" }, newAuthority: { type: "Address", address: umiPk(creator.publicKey.toBase58()) } }).sendAndConfirm(umiCreator);
+      });
+      await fails(initEscrow(kept, now() + 60), "CollectionPluginRefused");
+    });
+    it("accepts a collection with royalties and attributes beside the machine's update delegate", async () => {
+      const mb = await buildMachine(1, [
+        { type: "Royalties", basisPoints: 500, creators: [{ address: umiPk(payout.publicKey.toBase58()), percentage: 100 }], ruleSet: { type: "None" } },
+        { type: "Attributes", attributeList: [{ key: "season", value: "1" }] },
+      ]);
+      const { escrow } = await initEscrow(mb, now() + 60);
+      expect(await collectionAuthority(mb)).to.equal(escrow.toBase58());
     });
     it("the squat: nobody but NFI's configured key can co-sign an init, so nobody can take a machine's escrow address", async () => {
       await fails(initEscrow(m, now() + 60, { nfiSigner: stranger }), "NotNfi");
@@ -282,10 +323,11 @@ describe("nfi_launch_escrow", () => {
     });
     it("receipts close to their minters; the collection goes back to the creator; a stray lamport does not block the close; the creator gets the rent and the stray", async () => {
       await closeReceipt(escrow, a1, minterA.publicKey);
+      await fails(closeReceipt(escrow, a1, minterA.publicKey), "AccountNotInitialized");
       await closeReceipt(escrow, a2, minterB.publicKey);
       await fails(closeEscrow(escrow, vault), "NotFinal"); // the collection is still the escrow's
-      await fails(returnCollection(escrow, m, stranger), "NotCreator");
-      await returnCollection(escrow, m);
+      await fails(returnCollection(escrow, m, stranger, stranger.publicKey), "NotCreator"); // only to the creator fixed at init
+      await returnCollection(escrow, m, stranger); // by anyone
       expect(await collectionAuthority(m)).to.equal(creator.publicKey.toBase58());
       await fails(returnCollection(escrow, m), "AlreadyReleased");
       const tx = new anchor.web3.Transaction().add(SystemProgram.transfer({ fromPubkey: stranger.publicKey, toPubkey: vault, lamports: 1 }));
@@ -323,8 +365,14 @@ describe("nfi_launch_escrow", () => {
       await fails(release(escrow, vault, stranger), "NotOpen");
       await fails(returnCollection(escrow, m), "NotFinal");
     });
-    it("a stranger cannot refund an asset they do not hold; the owner can, the asset burns, price and fee come back", async () => {
+    it("a stranger cannot refund an asset they do not hold; a frozen asset fails cleanly and refunds after the thaw; the owner can, the asset burns, price and fee come back", async () => {
       await fails(refund(escrow, vault, a1, minterA.publicKey, stranger, m.collection), "NotOwner");
+      const asset = await fetchAsset(umiA, umiPk(a1.toBase58()));
+      const coll = await fetchCollection(umiA, umiPk(m.collection.toBase58()));
+      await addPlugin(umiA, { asset: asset.publicKey, collection: coll.publicKey, plugin: { type: "FreezeDelegate", frozen: true, authority: { type: "Owner" } } }).sendAndConfirm(umiA);
+      await fails(refund(escrow, vault, a1, minterA.publicKey, minterA, m.collection), "Error");
+      expect(await burned(a1)).to.equal(false);
+      await updatePlugin(umiA, { asset: asset.publicKey, collection: coll.publicKey, plugin: { type: "FreezeDelegate", frozen: false } }).sendAndConfirm(umiA);
       const m0 = await bal(minterA.publicKey);
       await refund(escrow, vault, a1, minterA.publicKey, minterA, m.collection);
       expect((await bal(minterA.publicKey)) - m0).to.be.greaterThan(SOL(0.5).toNumber());
@@ -358,11 +406,12 @@ describe("nfi_launch_escrow", () => {
       expect(await collectionAuthority(m)).to.equal(creator.publicKey.toBase58());
       await closeEscrow(escrow, vault);
     });
-    it("NFI's cancel: the vault then only ever pays minters, and the escrow closes once every receipt is refunded", async () => {
-      const m2 = await buildMachine(2);
+    it("NFI's cancel: the vault then only ever pays minters (or the owner of a mint paid for someone else), and the escrow closes once every receipt is refunded", async () => {
+      const m2 = await buildMachine(3);
       const { escrow: e2, vault: v2 } = await initEscrow(m2, now() + 3600);
       const a = await mint(umiA, minterA, m2, e2, v2);
       const b = await mint(umiB, minterB, m2, e2, v2, { payGroup: 0, mintGroup: "wl" });
+      const gift = await mint(umiA, minterA, m2, e2, v2, { owner: minterB.publicKey }); // A pays, B owns
       await cancel(e2, nfi);
       await fails(closeEscrow(e2, v2), "ReceiptsOpen");
       await fails(closeReceipt(e2, a, minterA.publicKey), "NotFinal");
@@ -371,6 +420,10 @@ describe("nfi_launch_escrow", () => {
       await fails(closeEscrow(e2, v2), "ReceiptsOpen"); // b unclaimed: forever, until refunded
       await fails(returnCollection(e2, m2), "NotFinal");
       await refund(e2, v2, b, minterB.publicKey, minterB, m2.collection);
+      await fails(refund(e2, v2, gift, minterA.publicKey, minterA, m2.collection), "NotOwner"); // the payer does not hold it
+      const g0 = await bal(minterB.publicKey);
+      await refund(e2, v2, gift, minterA.publicKey, minterB, m2.collection); // the owner gives it back and is paid
+      expect((await bal(minterB.publicKey)) - g0).to.be.greaterThan(SOL(1).toNumber());
       expect(await bal(treasury.publicKey)).to.equal(t0);
       expect(await bal(payout.publicKey)).to.equal(p0);
       await fails(closeEscrow(e2, v2), "NotFinal"); // the collection first

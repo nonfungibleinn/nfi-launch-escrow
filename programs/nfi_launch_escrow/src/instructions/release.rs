@@ -57,9 +57,10 @@ pub fn release_fee(ctx: Context<ReleaseFee>) -> Result<()> {
     Ok(())
 }
 
-/// The creator, after the release: the collection's update authority goes back to them. On the cancelled path the
-/// collection stays under the escrow for as long as a receipt is unclaimed, so a burn can never be blocked while a
-/// refund is still owed; that is the price of refunds that never expire.
+/// Anyone, once the escrow is final: the collection's update authority goes back to the creator fixed at init
+/// (permissionless, so a lost creator key never leaves a collection in escrow: review 3, finding 5). On the cancelled
+/// path the collection stays under the escrow for as long as a receipt is unclaimed, so a burn can never be blocked
+/// while a refund is still owed; that is the price of refunds that never expire.
 #[derive(Accounts)]
 pub struct ReturnCollection<'info> {
     #[account(mut, seeds = [ESCROW_SEED, escrow.candy_machine.as_ref()], bump = escrow.bump, has_one = creator @ EscrowError::NotCreator, has_one = collection @ EscrowError::WrongCollection)]
@@ -67,8 +68,11 @@ pub struct ReturnCollection<'info> {
     /// CHECK: the escrow's collection (has_one); MPL Core validates the update.
     #[account(mut)]
     pub collection: UncheckedAccount<'info>,
+    /// CHECK: the creator fixed at init (has_one); receives the update authority.
+    pub creator: UncheckedAccount<'info>,
+    /// Pays the network fee; anyone.
     #[account(mut)]
-    pub creator: Signer<'info>,
+    pub payer: Signer<'info>,
     pub mpl_core_program: Program<'info, MplCore>,
     pub system_program: Program<'info, System>,
 }
@@ -80,7 +84,7 @@ pub fn return_collection(ctx: Context<ReturnCollection>) -> Result<()> {
     require!(!e.collection_returned, EscrowError::AlreadyReleased);
     let seeds = e.signer_seeds();
     let seed_refs: Vec<&[u8]> = seeds.iter().map(|s| s.as_slice()).collect();
-    hand_collection(&ctx.accounts.collection.to_account_info(), &ctx.accounts.creator.to_account_info(), &e.to_account_info(), &ctx.accounts.creator.to_account_info(), &ctx.accounts.system_program.to_account_info(), &ctx.accounts.mpl_core_program.to_account_info(), &[&seed_refs])?;
+    hand_collection(&ctx.accounts.collection.to_account_info(), &ctx.accounts.payer.to_account_info(), &e.to_account_info(), &ctx.accounts.creator.to_account_info(), &ctx.accounts.system_program.to_account_info(), &ctx.accounts.mpl_core_program.to_account_info(), &[&seed_refs])?;
     let e = &mut ctx.accounts.escrow;
     e.collection_returned = true;
     emit!(CollectionReturned { escrow: e.key(), collection: e.collection, to: e.creator });

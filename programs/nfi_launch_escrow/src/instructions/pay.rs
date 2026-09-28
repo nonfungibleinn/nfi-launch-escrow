@@ -39,6 +39,17 @@ pub struct Pay<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// The group label out of mint_v1 data: mint_args Vec<u8> (u32 len + bytes) then Option<String> group.
+fn group_label(d: &[u8]) -> Option<&[u8]> {
+    let args_len = u32::from_le_bytes(d.get(0..4)?.try_into().ok()?) as usize;
+    let mut o = 4 + args_len;
+    let tag = *d.get(o)?;
+    o += 1;
+    if tag == 0 { return Some(&[]); }
+    let n = u32::from_le_bytes(d.get(o..o + 4)?.try_into().ok()?) as usize;
+    d.get(o + 4..o + 4 + n)
+}
+
 pub fn pay(ctx: Context<Pay>, group: u8, amount: u64) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
     let e = &mut ctx.accounts.escrow;
@@ -60,15 +71,8 @@ pub fn pay(ctx: Context<Pay>, group: u8, amount: u64) -> Result<()> {
         if a[IX_CANDY_GUARD].pubkey != e.candy_guard || a[IX_CANDY_MACHINE].pubkey != e.candy_machine || a[IX_ASSET].pubkey != ctx.accounts.asset.key()
             || a[IX_MINTER].pubkey != ctx.accounts.minter.key() || a[IX_COLLECTION].pubkey != e.collection { continue; }
         // data: discriminator(8) | mint_args: u32 len + bytes | group: Option<String> = tag(1) [+ u32 len + bytes]
-        let d = &ix.data[8..];
-        let args_len = u32::from_le_bytes(d.get(0..4).ok_or(EscrowError::MintNotFound)?.try_into().unwrap()) as usize;
-        let mut o = 4 + args_len;
-        let tag = *d.get(o).ok_or(EscrowError::MintNotFound)?;
-        o += 1;
-        let label: &[u8] = if tag == 0 { &[] } else {
-            let n = u32::from_le_bytes(d.get(o..o + 4).ok_or(EscrowError::MintNotFound)?.try_into().unwrap()) as usize;
-            d.get(o + 4..o + 4 + n).ok_or(EscrowError::MintNotFound)?
-        };
+        // A malformed mint-shaped instruction is skipped, not fatal: the real one may follow (review 3, finding 7).
+        let Some(label) = group_label(&ix.data[8..]) else { continue };
         if label != g.label_bytes() { continue; }
         found = true;
         break;

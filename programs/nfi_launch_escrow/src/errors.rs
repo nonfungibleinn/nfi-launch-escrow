@@ -44,8 +44,10 @@ pub enum EscrowError {
     AssetUnreadable,
     #[msg("The MPL Core account is not what the program expects")]
     CoreUnreadable,
-    #[msg("The collection's update authority must be this escrow before init")]
-    CollectionNotEscrowed,
+    #[msg("The collection's update authority must be the creator")]
+    CollectionNotCreators,
+    #[msg("Not a Core Candy Machine of this creator for this collection")]
+    BadMachine,
     #[msg("The collection carries a permanent delegate or an external plugin adapter")]
     CollectionPluginRefused,
     #[msg("Receipts are still open")]

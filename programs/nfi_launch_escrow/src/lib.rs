@@ -29,7 +29,7 @@ pub mod nfi_launch_escrow {
     pub fn propose_authority(ctx: Context<AdminConfig>, new_authority: Option<Pubkey>) -> Result<()> { instructions::propose_authority(ctx, new_authority) }
     pub fn accept_authority(ctx: Context<AcceptAuthority>) -> Result<()> { instructions::accept_authority(ctx) }
 
-    /// The creator and NFI's authority (from the config) both sign: wallets, window and prices are fixed here and never change.
+    /// The creator and NFI's authority (from the config) both sign: wallets, window and prices are fixed here and never change; the collection is handed to the escrow.
     pub fn init(ctx: Context<Init>, args: InitArgs) -> Result<()> { instructions::init(ctx, args) }
     /// In the mint transaction, before the mint of the same asset: the minter pays the group's price plus fee.
     pub fn pay(ctx: Context<Pay>, group: u8, amount: u64) -> Result<()> { instructions::pay(ctx, group, amount) }
@@ -45,7 +45,7 @@ pub mod nfi_launch_escrow {
     pub fn release_fee(ctx: Context<ReleaseFee>) -> Result<()> { instructions::release_fee(ctx) }
     /// The creator, while the escrow holds the collection: rename an asset or point it at new metadata (a reveal).
     pub fn update_asset(ctx: Context<UpdateAsset>, new_name: Option<String>, new_uri: Option<String>) -> Result<()> { instructions::update_asset_meta(ctx, new_name, new_uri) }
-    /// The creator, once the escrow is final: the collection's update authority comes back.
+    /// Anyone, once the escrow is final: the collection's update authority goes back to the creator.
     pub fn return_collection(ctx: Context<ReturnCollection>) -> Result<()> { instructions::return_collection(ctx) }
     /// Anyone, after a release: returns a receipt's rent to its minter.
     pub fn close_receipt(ctx: Context<CloseReceipt>) -> Result<()> { instructions::close_receipt(ctx) }
