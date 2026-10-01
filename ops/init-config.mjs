@@ -32,8 +32,7 @@ const send = async (ix, signer) => {
   const tx = new Transaction({ feePayer: signer.publicKey, ...bh }).add(ix);
   tx.sign(signer);
   const sim = await conn.simulateTransaction(tx);
-  if (sim.value.err) { console.error("would fail:", JSON.stringify(sim.value.err), (sim.value.logs ?? []).slice(-4).join("
-")); process.exit(1); }
+  if (sim.value.err) { console.error("would fail:", JSON.stringify(sim.value.err), (sim.value.logs ?? []).slice(-4).join("\n")); process.exit(1); }
   const sig = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: true });
   await conn.confirmTransaction({ signature: sig, ...bh }, "confirmed");
   return sig;
