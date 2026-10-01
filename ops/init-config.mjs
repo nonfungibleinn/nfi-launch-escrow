@@ -26,9 +26,36 @@ async function show() {
   console.log(JSON.stringify({ config: configPda.toBase58(), authority: authority.toBase58(), pendingAuthority: pending?.toBase58() ?? null, nfiAuthority: nfi.toBase58(), treasury: treasury.toBase58() }, null, 2));
 }
 if (process.argv[2] === "--show") { await show(); process.exit(0); }
+const walletOf = () => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(process.env.ANCHOR_WALLET ?? `${homedir()}/.config/solana/id.json`, "utf8"))));
+const send = async (ix, signer) => {
+  const bh = await conn.getLatestBlockhash("confirmed");
+  const tx = new Transaction({ feePayer: signer.publicKey, ...bh }).add(ix);
+  tx.sign(signer);
+  const sim = await conn.simulateTransaction(tx);
+  if (sim.value.err) { console.error("would fail:", JSON.stringify(sim.value.err), (sim.value.logs ?? []).slice(-4).join("
+")); process.exit(1); }
+  const sig = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+  await conn.confirmTransaction({ signature: sig, ...bh }, "confirmed");
+  return sig;
+};
+// --propose <new_authority>: the config authority proposes its successor (two-step; the successor accepts).
+if (process.argv[2] === "--propose") {
+  const next = new PublicKey(process.argv[3]);
+  const w = walletOf();
+  const ix = new TransactionInstruction({ programId: PROGRAM, keys: [{ pubkey: configPda, isSigner: false, isWritable: true }, { pubkey: w.publicKey, isSigner: true, isWritable: false }], data: Buffer.concat([disc("propose_authority"), Buffer.from([1]), next.toBuffer()]) });
+  console.log("propose_authority", await send(ix, w));
+  await show();
+  process.exit(0);
+}
+// --accept-ix <new_authority>: the accept_authority instruction the successor (a Squads vault) must execute, as base58 program id + account list + hex data.
+if (process.argv[2] === "--accept-ix") {
+  const next = new PublicKey(process.argv[3]);
+  console.log(JSON.stringify({ programId: PROGRAM.toBase58(), accounts: [{ pubkey: configPda.toBase58(), isSigner: false, isWritable: true }, { pubkey: next.toBase58(), isSigner: true, isWritable: false }], data: disc("accept_authority").toString("hex") }, null, 2));
+  process.exit(0);
+}
 const [nfiArg, treasuryArg] = process.argv.slice(2);
 if (!nfiArg || !treasuryArg) { console.error("usage: init-config.mjs <nfi_authority> <treasury> | --show"); process.exit(2); }
-const wallet = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(process.env.ANCHOR_WALLET ?? `${homedir()}/.config/solana/id.json`, "utf8"))));
+const wallet = walletOf();
 if (await conn.getAccountInfo(configPda)) { console.log("config already exists"); await show(); process.exit(0); }
 const ix = new TransactionInstruction({
   programId: PROGRAM,
