@@ -13,7 +13,7 @@ import * as anchor from "@coral-xyz/anchor";
 import { Program, BN } from "@coral-xyz/anchor";
 import { Keypair, PublicKey, SystemProgram, LAMPORTS_PER_SOL, SYSVAR_INSTRUCTIONS_PUBKEY } from "@solana/web3.js";
 import { createUmi } from "@metaplex-foundation/umi-bundle-defaults";
-import { generateSigner, keypairIdentity, publicKey as umiPk, some, none, transactionBuilder, type Umi, type KeypairSigner } from "@metaplex-foundation/umi";
+import { generateSigner, keypairIdentity, publicKey as umiPk, some, none, sol, transactionBuilder, type Umi, type KeypairSigner } from "@metaplex-foundation/umi";
 import { fromWeb3JsKeypair, fromWeb3JsInstruction, toWeb3JsPublicKey } from "@metaplex-foundation/umi-web3js-adapters";
 import { setComputeUnitLimit } from "@metaplex-foundation/mpl-toolbox";
 import { addPlugin, approveCollectionPluginAuthority, burn as coreBurn, CheckResult, transfer as coreTransfer, update as coreUpdate, updatePlugin, updateCollectionPlugin, createCollection as createCoreCollection, fetchAsset, fetchCollection, mplCore, updateCollectionV1 } from "@metaplex-foundation/mpl-core";
@@ -62,14 +62,14 @@ describe("nfi_launch_escrow", () => {
 
   type Machine = { cm: PublicKey; guard: PublicKey; collection: PublicKey };
   /** A collection and a Core candy machine with two guard groups (wl, pub) and NO payment guards: the escrow is the price. */
-  const buildMachine = async (items = 6, plugins: any[] = [], after?: (m: Machine) => Promise<void>): Promise<Machine> => {
+  const buildMachine = async (items = 6, plugins: any[] = [], after?: (m: Machine) => Promise<void>, gg: { base?: any; group?: any } = {}): Promise<Machine> => {
     const coll = generateSigner(umiCreator);
     await createCoreCollection(umiCreator, { collection: coll, name: "Launch", uri: "https://launch.nfinn.io/spike/1.json", plugins }).sendAndConfirm(umiCreator);
     const cm = generateSigner(umiCreator);
     const b = await createMachine(umiCreator, {
       candyMachine: cm, collection: coll.publicKey, collectionUpdateAuthority: umiCreator.identity, itemsAvailable: items,
       configLineSettings: some({ prefixName: "Item #", nameLength: 4, prefixUri: "https://launch.nfinn.io/spike/", uriLength: 8, isSequential: false }),
-      guards: {}, groups: [{ label: "wl", guards: {} }, { label: "pub", guards: {} }],
+      guards: gg.base ?? {}, groups: [{ label: "wl", guards: gg.group ?? {} }, { label: "pub", guards: gg.group ?? {} }],
     });
     await b.sendAndConfirm(umiCreator);
     await addConfigLines(umiCreator, { candyMachine: cm.publicKey, index: 0, configLines: Array.from({ length: items }, (_, i) => ({ name: String(i + 1), uri: `${(i % 5) + 1}.json` })) }).sendAndConfirm(umiCreator);
@@ -448,6 +448,25 @@ describe("nfi_launch_escrow", () => {
       expect(JSON.stringify(e.cancelledBy)).to.include("nfi");
       expect(e.nfiAuthority.toBase58()).to.equal(nfi.publicKey.toBase58()); // the record of who signed at init
       await program.methods.updateConfig(nfi.publicKey).accounts({ config: configPda, authority: authority.publicKey, treasury: treasury.publicKey }).rpc();
+    });
+  });
+  describe("the bot tax guard and pay in the same transaction (why the service never pairs them)", () => {
+    // A taxed mint SUCCEEDS as a transaction without creating the asset, and pay has already moved the money: a payment with
+    // nothing to refund against. This fixture (a mainnet dump) lets the taxed mint through; the devnet guard refuses the pay
+    // program outright (UnauthorizedProgramFound). Either way an escrow launch must carry no bot tax; the service enforces it.
+    it("records what the guard fixture does with a bot tax beside pay", async () => {
+      const taxed = await buildMachine(2, [], undefined, { base: { botTax: some({ lamports: sol(0.005), lastInstruction: true }) } });
+      const { escrow: e1, vault: v1 } = await initEscrow(taxed, now() + 3600);
+      let out = "";
+      try { await mint(umiA, minterA, taxed, e1, v1); out = "minted"; } catch (e: any) { out = String(e.message ?? e); }
+      console.log("        bot tax alone:", out.slice(0, 120));
+      const gated = await buildMachine(2, [], undefined, { base: { botTax: some({ lamports: sol(0.005), lastInstruction: true }) }, group: { programGate: some({ additional: [umiPk(program.programId.toBase58())] }) } });
+      const { escrow: e2, vault: v2 } = await initEscrow(gated, now() + 3600);
+      let out2 = "";
+      try { await mint(umiA, minterA, gated, e2, v2); out2 = "minted"; } catch (e: any) { out2 = String(e.message ?? e); }
+      console.log("        bot tax + program gate:", out2.slice(0, 120));
+      const e = await program.account.launchEscrow.fetch(e2);
+      console.log("        gated escrow receipts:", e.receipts.toNumber());
     });
   });
 });

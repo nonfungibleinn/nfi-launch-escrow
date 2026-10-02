@@ -84,6 +84,11 @@ deploy: `bash ops/wsl-build.sh check` prints `MIN_WINDOW_SECS` from the built ID
   a staking lock, or a Candy Guard freeze payment). The refund fails cleanly and works after the thaw (tested). So an
   escrow launch must carry NO Freeze Sol Payment or Freeze Token Payment guard (the approval step checks), and the
   refund UI says "unlist or unstake first" when the asset is frozen.
+- **No bot tax on an escrow launch.** Candy Guard's bot tax turns a failed mint into a successful transaction that
+  creates no asset; `pay` has already moved the money by then, so the vault would hold a payment with nothing to refund
+  against. Newer guard builds also refuse any unknown program in the transaction when the tax's last-instruction rule
+  is on. The service never configures a bot tax beside the escrow; its permit simulation refuses bad mints before they
+  are sent instead.
 - **A mint paid for someone else** (mint_v1 lets the minter name another owner): while the asset exists its owner
   refunds and is paid; once burned outside the program, the crank pays the receipt's minter, not the owner. The UI
   says so on gifts.
