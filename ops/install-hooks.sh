@@ -8,8 +8,9 @@ cat > .git/hooks/pre-push <<'HOOK'
 z=0000000000000000000000000000000000000000
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ "$local_sha" = "$z" ] && continue
-  if [ "$remote_sha" = "$z" ]; then range="$(git rev-list --max-parents=0 "$local_sha" | tail -1)^..$local_sha" 2>/dev/null || range="$local_sha"; else range="$remote_sha..$local_sha"; fi
-  bash ops/public-repo-precheck.sh "$range" || { echo "push refused by ops/public-repo-precheck.sh"; exit 1; }
+  # A new branch, or a remote commit this clone no longer has (after a history rewrite): scan the whole tracked tree instead of a range.
+  if [ "$remote_sha" = "$z" ] || ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null || ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then range=""; else range="$remote_sha..$local_sha"; fi
+  bash ops/public-repo-precheck.sh $range || { echo "push refused by ops/public-repo-precheck.sh"; exit 1; }
 done
 exit 0
 HOOK
