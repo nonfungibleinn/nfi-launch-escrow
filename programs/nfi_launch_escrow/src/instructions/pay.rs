@@ -16,11 +16,14 @@ const IX_MINTER: usize = 5;
 const IX_ASSET: usize = 7;
 const IX_COLLECTION: usize = 8;
 
-/// Sent by the minter in the same transaction as the mint, before it. Review 1, finding 1: the transaction's shape is
-/// not trusted. The program reads the instructions sysvar and requires a Core Candy Guard mint_v1 later in this same
-/// transaction that mints THIS asset, from THIS escrow's machine and guard, into THIS escrow's collection, to THIS
-/// minter, in the group whose label matches the group paid for. The asset signs (the mint needs its signature anyway),
-/// so nobody can pay for someone else's pending asset first. The transaction is atomic: no mint, no payment.
+/// Sent by the minter in the same transaction as the mint, AFTER it. Two proofs, both required:
+///   1. (review 1, finding 1) the instructions sysvar holds a Core Candy Guard mint_v1 EARLIER in this transaction that
+///      mints THIS asset, from THIS escrow's machine and guard, into THIS escrow's collection, to THIS minter, in the
+///      group whose label matches the group paid for; the asset signs, so nobody can pay for someone else's asset.
+///   2. the asset account EXISTS now as a live MPL Core asset in this escrow's collection. A Candy Guard bot tax turns a
+///      failed mint into a successful transaction that creates no asset; with the payment before the mint that left money
+///      in the vault with nothing to refund against (devnet rehearsal, 1 October). Paying after the mint and reading the
+///      asset makes that impossible: no asset, no payment, and the whole transaction reverts.
 #[derive(Accounts)]
 pub struct Pay<'info> {
     #[account(mut, seeds = [ESCROW_SEED, escrow.candy_machine.as_ref()], bump = escrow.bump)]
@@ -29,7 +32,7 @@ pub struct Pay<'info> {
     pub vault: Account<'info, Vault>,
     #[account(init, payer = minter, space = 8 + MintReceipt::INIT_SPACE, seeds = [RECEIPT_SEED, escrow.key().as_ref(), asset.key().as_ref()], bump)]
     pub receipt: Account<'info, MintReceipt>,
-    /// The asset the mint creates later in this transaction. It signs, as it must for the mint.
+    /// The asset the mint created earlier in this transaction (read as a Core asset). It signs, as it did for the mint.
     pub asset: Signer<'info>,
     #[account(mut)]
     pub minter: Signer<'info>,
@@ -59,13 +62,20 @@ pub fn pay(ctx: Context<Pay>, group: u8, amount: u64) -> Result<()> {
     let g = *e.groups.get(group as usize).ok_or(EscrowError::BadGroup)?;
     let due = g.price.checked_add(g.fee).ok_or(EscrowError::Overflow)?;
     require!(amount == due, EscrowError::BadAmount);
-    // The mint that this payment is for must follow in this transaction.
+    // The asset must exist: a live Core asset in this escrow's collection, created by the mint just before this instruction.
+    {
+        let a = ctx.accounts.asset.to_account_info();
+        require!(*a.owner == crate::mplcore::MPL_CORE_ID, EscrowError::AssetNotMinted);
+        let data = a.try_borrow_data()?;
+        let (_, coll) = crate::mplcore::asset_owner_and_collection(&data).map_err(|_| EscrowError::AssetNotMinted)?;
+        require!(coll == Some(e.collection), EscrowError::AssetNotMinted);
+    }
+    // The mint that this payment is for must precede it in this transaction.
     let ixs = ctx.accounts.instructions.to_account_info();
     let me = load_current_index_checked(&ixs)? as usize;
     let mut found = false;
-    let mut i = me + 1;
-    while let Ok(ix) = load_instruction_at_checked(i, &ixs) {
-        i += 1;
+    for i in 0..me {
+        let Ok(ix) = load_instruction_at_checked(i, &ixs) else { break };
         if ix.program_id != CANDY_GUARD_ID || ix.data.len() < 8 || ix.data[..8] != MINT_V1 || ix.accounts.len() <= IX_COLLECTION { continue; }
         let a = &ix.accounts;
         if a[IX_CANDY_GUARD].pubkey != e.candy_guard || a[IX_CANDY_MACHINE].pubkey != e.candy_machine || a[IX_ASSET].pubkey != ctx.accounts.asset.key()

@@ -90,7 +90,7 @@ describe("nfi_launch_escrow", () => {
       .signers([creator, o.nfiSigner ?? nfi]).rpc();
     return { escrow, vault };
   };
-  type MintOpts = { payGroup?: number; mintGroup?: string; amount?: BN; payAsset?: KeypairSigner; withPay?: boolean; withMint?: boolean; mintMachine?: Machine; mintCollection?: PublicKey; payAfter?: boolean; mintMinter?: Keypair; owner?: PublicKey };
+  type MintOpts = { payGroup?: number; mintGroup?: string; amount?: BN; payAsset?: KeypairSigner; withPay?: boolean; withMint?: boolean; mintMachine?: Machine; mintCollection?: PublicKey; payBefore?: boolean; mintMinter?: Keypair; owner?: PublicKey };
   /** The mint transaction as the permit builder sends it: compute budget, pay, mint_v1. Returns the asset. */
   const mint = async (umi: Umi, minter: Keypair, m: Machine, escrow: PublicKey, vault: PublicKey, o: MintOpts = {}) => {
     const asset = generateSigner(umi);
@@ -103,13 +103,13 @@ describe("nfi_launch_escrow", () => {
       const ix = await program.methods.pay(g, amount).accounts({ escrow, vault, receipt: receiptPda(escrow, toWeb3JsPublicKey(payAsset.publicKey)), asset: toWeb3JsPublicKey(payAsset.publicKey), minter: minter.publicKey, instructions: SYSVAR_INSTRUCTIONS_PUBKEY, systemProgram: SystemProgram.programId }).instruction();
       return { instruction: fromWeb3JsInstruction(ix), signers: [payAsset], bytesCreatedOnChain: 0 };
     };
-    if (o.withPay !== false && !o.payAfter) b = b.add(await payIx());
+    if (o.withPay !== false && o.payBefore) b = b.add(await payIx()); // the wrong order, for the test that proves it is refused
     if (o.withMint !== false) {
       const mm = o.mintMachine ?? m;
       const mintMinter = o.mintMinter ? { minter: (umiFor(o.mintMinter)).identity } : {};
       b = b.add(mintV1(umi, { candyMachine: umiPk(mm.cm.toBase58()), candyGuard: umiPk(mm.guard.toBase58()), collection: umiPk((o.mintCollection ?? mm.collection).toBase58()), asset, ...mintMinter, ...(o.owner ? { owner: umiPk(o.owner.toBase58()) } : {}), group: o.mintGroup === "" ? none() : some(o.mintGroup ?? "pub"), mintArgs: {} }));
     }
-    if (o.withPay !== false && o.payAfter) b = b.add(await payIx());
+    if (o.withPay !== false && !o.payBefore) b = b.add(await payIx()); // pay AFTER the mint: the asset must exist by then
     await b.sendAndConfirm(umi);
     return toWeb3JsPublicKey(asset.publicKey);
   };
@@ -225,12 +225,12 @@ describe("nfi_launch_escrow", () => {
   describe("pay is bound to the mint in its transaction", () => {
     let m: Machine, other: Machine, escrow: PublicKey, vault: PublicKey;
     before(async () => { m = await buildMachine(8); other = await buildMachine(2); ({ escrow, vault } = await initEscrow(m, now() + 3600)); });
-    it("a payment with no mint after it is refused, and so is a payment placed after the mint", async () => {
-      await fails(mint(umiA, minterA, m, escrow, vault, { withMint: false }), "MintNotFound");
-      await fails(mint(umiA, minterA, m, escrow, vault, { payAfter: true }), "MintNotFound");
+    it("a payment with no mint is refused (no asset), and so is a payment placed before the mint", async () => {
+      await fails(mint(umiA, minterA, m, escrow, vault, { withMint: false }), "AssetNotMinted");
+      await fails(mint(umiA, minterA, m, escrow, vault, { payBefore: true }), "AssetNotMinted");
     });
     it("a payment for one asset while minting another is refused", async () => {
-      await fails(mint(umiA, minterA, m, escrow, vault, { payAsset: generateSigner(umiA) }), "MintNotFound");
+      await fails(mint(umiA, minterA, m, escrow, vault, { payAsset: generateSigner(umiA) }), "AssetNotMinted");
     });
     it("a payment by one wallet for a mint to another is refused", async () => {
       await fails(mint(umiA, minterA, m, escrow, vault, { mintMinter: minterB }), "MintNotFound");
@@ -239,8 +239,8 @@ describe("nfi_launch_escrow", () => {
       await fails(mint(umiA, minterA, m, escrow, vault, { payGroup: 0, mintGroup: "pub" }), "MintNotFound");
     });
     it("a payment to this escrow with a mint from another machine, or into another collection, is refused", async () => {
-      await fails(mint(umiA, minterA, m, escrow, vault, { mintMachine: other }), "MintNotFound");
-      await fails(mint(umiA, minterA, m, escrow, vault, { mintCollection: other.collection }), "MintNotFound");
+      await fails(mint(umiA, minterA, m, escrow, vault, { mintMachine: other }), "AssetNotMinted"); // the asset lands in the other collection
+      await fails(mint(umiA, minterA, m, escrow, vault, { mintCollection: other.collection }), "Collection public key mismatch"); // the guard itself refuses first
     });
     it("the wrong amount and an unknown group are refused", async () => {
       await fails(mint(umiA, minterA, m, escrow, vault, { amount: SOL(1) }), "BadAmount");
@@ -454,7 +454,7 @@ describe("nfi_launch_escrow", () => {
     // A taxed mint SUCCEEDS as a transaction without creating the asset, and pay has already moved the money: a payment with
     // nothing to refund against. This fixture (a mainnet dump) lets the taxed mint through; the devnet guard refuses the pay
     // program outright (UnauthorizedProgramFound). Either way an escrow launch must carry no bot tax; the service enforces it.
-    it("records what the guard fixture does with a bot tax beside pay", async () => {
+    it("with a bot tax the taxed mint creates no asset, so pay fails and the whole transaction reverts: no payment without the NFT", async () => {
       const taxed = await buildMachine(2, [], undefined, { base: { botTax: some({ lamports: sol(0.005), lastInstruction: true }) } });
       const { escrow: e1, vault: v1 } = await initEscrow(taxed, now() + 3600);
       let out = "";
@@ -467,6 +467,8 @@ describe("nfi_launch_escrow", () => {
       console.log("        bot tax + program gate:", out2.slice(0, 120));
       const e = await program.account.launchEscrow.fetch(e2);
       console.log("        gated escrow receipts:", e.receipts.toNumber());
+      const e1s = await program.account.launchEscrow.fetch(e1);
+      expect(e1s.receipts.toNumber() + e.receipts.toNumber(), "no receipt may exist without its asset").to.equal([out, out2].filter((x) => x === "minted").length);
     });
   });
 });

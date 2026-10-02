@@ -34,8 +34,10 @@ pub enum EscrowError {
     BadGroup,
     #[msg("The amount does not match the group's price plus fee")]
     BadAmount,
-    #[msg("No mint of this asset from this launch's machine, in this group, follows in the transaction")]
+    #[msg("No mint of this asset from this launch's machine, in this group, precedes this payment in the transaction")]
     MintNotFound,
+    #[msg("The asset does not exist as a Core asset of this collection: nothing to pay for")]
+    AssetNotMinted,
     #[msg("Already refunded")]
     AlreadyRefunded,
     #[msg("The collection account passed is not the asset's collection")]

@@ -51,7 +51,7 @@ added to the collection, not through the update authority.
 | init_config | the program's upgrade authority, once, **right after the deploy** and before any authority change | |
 | update_config, propose/accept_authority | the config authority | |
 | init | creator (the machine's authority and the collection's update authority) + NFI's key (from the config) | |
-| pay | the minter, in the mint transaction, before `mint_v1` | Open, not paused, before window_end |
+| pay | the minter, in the mint transaction, after `mint_v1` (the asset must exist) | Open, not paused, before window_end |
 | cancel | NFI's **current** config key, or the creator | Open, before window_end |
 | set_paused | NFI's current config key | any time; blocks pay only |
 | refund | the asset's owner (burns it); anyone once it is a burned shell | Cancelled |
@@ -85,8 +85,8 @@ deploy: `bash ops/wsl-build.sh check` prints `MIN_WINDOW_SECS` from the built ID
   escrow launch must carry NO Freeze Sol Payment or Freeze Token Payment guard (the approval step checks), and the
   refund UI says "unlist or unstake first" when the asset is frozen.
 - **No bot tax on an escrow launch.** Candy Guard's bot tax turns a failed mint into a successful transaction that
-  creates no asset; `pay` has already moved the money by then, so the vault would hold a payment with nothing to refund
-  against. Newer guard builds also refuse any unknown program in the transaction when the tax's last-instruction rule
+  creates no asset. Since 1 October `pay` runs AFTER the mint and reads the asset, so such a transaction fails as a whole
+  and no payment can exist without its NFT; the rule stays because the tax's last-instruction check would refuse pay anyway. Newer guard builds also refuse any unknown program in the transaction when the tax's last-instruction rule
   is on. The service never configures a bot tax beside the escrow; its permit simulation refuses bad mints before they
   are sent instead.
 - **A mint paid for someone else** (mint_v1 lets the minter name another owner): while the asset exists its owner
