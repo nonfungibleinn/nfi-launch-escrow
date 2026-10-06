@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use crate::mplcore::{asset_owner_and_collection, burn, MplCore, KEY_UNINITIALIZED, MPL_CORE_ID};
+use crate::mplcore::{asset_gone, asset_owner_and_collection, burn, MplCore, MPL_CORE_ID};
 use crate::errors::EscrowError;
 use crate::events::Refunded;
 use crate::instructions::debit;
@@ -14,7 +14,7 @@ use crate::state::*;
 #[derive(Accounts)]
 pub struct Refund<'info> {
     #[account(mut, seeds = [ESCROW_SEED, escrow.candy_machine.as_ref()], bump = escrow.bump)]
-    pub escrow: Account<'info, LaunchEscrow>,
+    pub escrow: Box<Account<'info, LaunchEscrow>>,
     #[account(mut, seeds = [VAULT_SEED, escrow.key().as_ref()], bump = escrow.vault_bump)]
     pub vault: Account<'info, Vault>,
     #[account(mut, close = minter, seeds = [RECEIPT_SEED, escrow.key().as_ref(), receipt.asset.as_ref()], bump = receipt.bump, has_one = escrow, has_one = minter)]
@@ -41,17 +41,15 @@ pub fn refund(ctx: Context<Refund>) -> Result<()> {
     let r = &ctx.accounts.receipt;
     require!(!r.refunded, EscrowError::AlreadyRefunded);
     let asset = &ctx.accounts.asset;
-    require!(*asset.owner == MPL_CORE_ID, EscrowError::AssetUnreadable);
-    // Exactly two shapes are accepted: a live AssetV1, or the one-byte Uninitialized shell Core leaves after a burn.
-    let (exists, owner_now) = {
+    // Three shapes are accepted: a live AssetV1, Core's one-byte shell after a burn, or what Core's permissionless Collect
+    // leaves of that shell (System-owned, zeroed or gone: round 4, L-005). Anything else at the address is refused.
+    let (exists, owner_now) = if asset_gone(&asset.to_account_info())? { (false, Pubkey::default()) } else {
+        require!(*asset.owner == MPL_CORE_ID, EscrowError::AssetUnreadable);
         let data = asset.try_borrow_data()?;
-        if data.len() == 1 && data[0] == KEY_UNINITIALIZED { (false, Pubkey::default()) }
-        else {
-            let (owner, coll) = asset_owner_and_collection(&data)?;
-            let want = coll.unwrap_or(MPL_CORE_ID);
-            require!(ctx.accounts.collection.key() == want, EscrowError::WrongCollection);
-            (true, owner)
-        }
+        let (owner, coll) = asset_owner_and_collection(&data)?;
+        let want = coll.unwrap_or(MPL_CORE_ID);
+        require!(ctx.accounts.collection.key() == want, EscrowError::WrongCollection);
+        (true, owner)
     };
     let amount = r.price.checked_add(r.fee).ok_or(EscrowError::Overflow)?;
     let paid_to = if exists {

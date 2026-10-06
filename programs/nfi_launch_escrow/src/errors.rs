@@ -4,9 +4,9 @@ use anchor_lang::prelude::*;
 pub enum EscrowError {
     #[msg("Only the config authority may do this")]
     NotAuthority,
-    #[msg("Config values cannot be empty")]
+    #[msg("Config values cannot be empty, and NFI's hot key and the canceller must differ")]
     BadConfig,
-    #[msg("Payments are paused")]
+    #[msg("Minting is paused")]
     Paused,
     #[msg("Only NFI's authority may do this")]
     NotNfi,
@@ -32,11 +32,7 @@ pub enum EscrowError {
     BadWallet,
     #[msg("No such group")]
     BadGroup,
-    #[msg("The amount does not match the group's price plus fee")]
-    BadAmount,
-    #[msg("No mint of this asset from this launch's machine, in this group, precedes this payment in the transaction")]
-    MintNotFound,
-    #[msg("The asset does not exist as a Core asset of this collection: nothing to pay for")]
+    #[msg("The asset does not exist as a Core asset of this collection owned by the minter")]
     AssetNotMinted,
     #[msg("Already refunded")]
     AlreadyRefunded,
@@ -48,9 +44,9 @@ pub enum EscrowError {
     CoreUnreadable,
     #[msg("The collection's update authority must be the creator")]
     CollectionNotCreators,
-    #[msg("Not a Core Candy Machine of this creator for this collection")]
+    #[msg("Not an unminted Core Candy Machine of this creator for this collection")]
     BadMachine,
-    #[msg("The collection carries a permanent delegate or an external plugin adapter")]
+    #[msg("The collection carries a plugin, a plugin authority or an external plugin adapter an escrow launch refuses")]
     CollectionPluginRefused,
     #[msg("Receipts are still open")]
     ReceiptsOpen,
@@ -64,4 +60,38 @@ pub enum EscrowError {
     NotFinal,
     #[msg("Arithmetic overflow")]
     Overflow,
+    #[msg("Only the config's canceller or the creator may cancel")]
+    NotCanceller,
+    #[msg("The wallet must already hold its rent-exempt minimum")]
+    WalletUnfunded,
+    #[msg("The collection already has assets")]
+    CollectionNotEmpty,
+    #[msg("A hidden-settings machine needs a reveal commitment, and a machine with final metadata must not have one")]
+    RevealCommitment,
+    #[msg("A phase must open before the window ends and close after it opens, no later than the window")]
+    BadPhase,
+    #[msg("This phase has not started")]
+    PhaseNotStarted,
+    #[msg("This phase has ended")]
+    PhaseEnded,
+    #[msg("This phase's allocation is minted out")]
+    PhaseSoldOut,
+    #[msg("This wallet reached the phase's mint limit")]
+    WalletLimit,
+    #[msg("The permit key is not this launch's")]
+    NotPermit,
+    #[msg("Only a phase that has not started can change")]
+    PhaseStarted,
+    #[msg("This launch has no reveal commitment")]
+    NoReveal,
+    #[msg("The collection has gone back to the creator")]
+    CollectionReturned,
+    #[msg("Already revealed, or refunded")]
+    AlreadyRevealed,
+    #[msg("Reveal waits until minting is over")]
+    MintingNotOver,
+    #[msg("The name and URI are not the ones committed for this mint number")]
+    BadRevealProof,
+    #[msg("The asset's committed reveal has not happened yet")]
+    RevealPending,
 }

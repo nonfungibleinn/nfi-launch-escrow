@@ -1,29 +1,41 @@
 //! The little of MPL Core and the Core Candy Machine this program reads and calls, by hand: the Rust clients overflow
-//! the SBF stack frame (learned on nfi_raffle), so account layouts are parsed at fixed offsets and the Core
-//! instructions are built as raw metas.
+//! the SBF stack frame (learned on nfi_raffle), so account layouts are parsed at fixed offsets and the instructions are
+//! built as raw metas.
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{instruction::{AccountMeta, Instruction}, program::invoke_signed};
+use anchor_lang::solana_program::{hash::hashv, instruction::{AccountMeta, Instruction}, program::invoke_signed};
 use crate::errors::EscrowError;
 
 pub const MPL_CORE_ID: Pubkey = anchor_lang::solana_program::pubkey!("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
 pub const CANDY_MACHINE_ID: Pubkey = anchor_lang::solana_program::pubkey!("CMACYFENjoBMHzapRXyo1JZkVS6EtaDDzkjMrmQLvr4J");
 const CANDY_MACHINE_DISC: [u8; 8] = [51, 173, 177, 113, 25, 241, 109, 189];
+/// Anchor discriminators of the Core Candy Machine instructions used here (sha256("global:<name>")[..8]).
+const CM_MINT_ASSET: [u8; 8] = [84, 175, 211, 156, 56, 250, 104, 118];
+const CM_SET_AUTHORITY: [u8; 8] = [133, 250, 37, 21, 110, 163, 26, 121];
+const CM_SET_MINT_AUTHORITY: [u8; 8] = [67, 127, 155, 187, 100, 174, 103, 121];
 pub const KEY_UNINITIALIZED: u8 = 0;
 pub const KEY_ASSET_V1: u8 = 1;
 pub const KEY_COLLECTION_V1: u8 = 5;
+const IX_ADD_PLUGIN_V1: u8 = 2;
 const IX_BURN_V1: u8 = 12;
 const IX_UPDATE_V1: u8 = 15;
 const IX_UPDATE_COLLECTION_V1: u8 = 16;
 const PLUGIN_UPDATE_DELEGATE: u8 = 4;
-/// Collection plugins a launch may carry: Royalties, UpdateDelegate (pinned below), Attributes, AddBlocker,
-/// ImmutableMetadata, VerifiedCreators, Autograph. Everything else (every freeze, transfer or burn delegate, editions,
-/// Bubblegum, execute freezes, groups, anything newer) is refused: an allowlist, so a future plugin type cannot slip in.
-const PLUGINS_ALLOWED: [u8; 7] = [0, 4, 6, 11, 12, 13, 14];
+const PLUGIN_IMMUTABLE_METADATA: u8 = 12;
+/// Collection plugins a launch may carry: Royalties, UpdateDelegate (pinned below), Attributes, ImmutableMetadata,
+/// VerifiedCreators, Autograph. Everything else (every freeze, transfer or burn delegate, editions, AddBlocker, Bubblegum,
+/// execute freezes, groups, anything newer) is refused: an allowlist, so a future plugin type cannot slip in.
+const PLUGINS_ALLOWED: [u8; 6] = [0, 4, 6, 12, 13, 14];
 
 #[derive(Clone)]
 pub struct MplCore;
 impl Id for MplCore {
     fn id() -> Pubkey { MPL_CORE_ID }
+}
+
+#[derive(Clone)]
+pub struct CandyMachineProgram;
+impl Id for CandyMachineProgram {
+    fn id() -> Pubkey { CANDY_MACHINE_ID }
 }
 
 fn rd_u32(data: &[u8], o: usize) -> Result<u32> { Ok(u32::from_le_bytes(data.get(o..o + 4).ok_or(EscrowError::CoreUnreadable)?.try_into().unwrap())) }
@@ -38,6 +50,14 @@ pub fn asset_owner_and_collection(data: &[u8]) -> Result<(Pubkey, Option<Pubkey>
     Ok((owner, coll))
 }
 
+/// The asset no longer exists: the one-byte shell Core leaves after a burn, or that shell after Core's permissionless
+/// Collect handed it to the System Program (or drained it away entirely). Round 4, L-005: refunds must survive Collect.
+pub fn asset_gone(a: &AccountInfo) -> Result<bool> {
+    let data = a.try_borrow_data()?;
+    if *a.owner == MPL_CORE_ID { return Ok(data.len() == 1 && data[0] == KEY_UNINITIALIZED); }
+    Ok(*a.owner == anchor_lang::system_program::ID && data.len() <= 1 && data.iter().all(|b| *b == 0))
+}
+
 /// A collection's update authority: key(1) | update_authority(32).
 pub fn collection_update_authority(data: &[u8]) -> Result<Pubkey> {
     require!(data.len() >= 33 && data[0] == KEY_COLLECTION_V1, EscrowError::CoreUnreadable);
@@ -49,24 +69,55 @@ pub fn candy_machine_authority_pda(candy_machine: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(&[b"candy_machine", candy_machine.as_ref()], &CANDY_MACHINE_ID).0
 }
 
-/// A Core Candy Machine's authority, mint authority (its guard) and collection: disc(8) | authority | mint_authority | collection_mint.
-pub fn candy_machine_view(data: &[u8]) -> Result<(Pubkey, Pubkey, Pubkey)> {
-    require!(data.len() >= 104 && data[..8] == CANDY_MACHINE_DISC, EscrowError::BadMachine);
-    Ok((rd_pk(data, 8)?, rd_pk(data, 40)?, rd_pk(data, 72)?))
+/// What this program reads of a Core Candy Machine.
+pub struct MachineView {
+    pub authority: Pubkey,
+    pub mint_authority: Pubkey,
+    pub collection: Pubkey,
+    pub items_redeemed: u64,
+    pub items_available: u64,
+    pub hidden: bool,
+}
+
+/// disc(8) | authority | mint_authority | collection_mint | items_redeemed u64 | data: items_available u64, max_supply u64,
+/// is_mutable bool, config_line_settings Option<{prefix_name String, name_length u32, prefix_uri String, uri_length u32,
+/// is_sequential bool}>, hidden_settings Option<..>.
+pub fn candy_machine_view(data: &[u8]) -> Result<MachineView> {
+    require!(data.len() >= 130 && data[..8] == CANDY_MACHINE_DISC, EscrowError::BadMachine);
+    let mut o = 129;
+    match data[o] {
+        0 => o += 1,
+        1 => {
+            o += 1;
+            o += 4 + rd_u32(data, o)? as usize + 4;
+            o += 4 + rd_u32(data, o)? as usize + 4 + 1;
+        }
+        _ => return err!(EscrowError::BadMachine),
+    }
+    let hidden = match data.get(o) { Some(0) => false, Some(1) => true, _ => return err!(EscrowError::BadMachine) };
+    Ok(MachineView {
+        authority: rd_pk(data, 8)?,
+        mint_authority: rd_pk(data, 40)?,
+        collection: rd_pk(data, 72)?,
+        items_redeemed: rd_u64(data, 104)?,
+        items_available: rd_u64(data, 112)?,
+        hidden,
+    })
 }
 
 /// Refuses a collection whose plugins could defeat a refund or bite a holder (review 2 finding 1, review 3 findings
-/// 1 and 2). Allowlist of plugin types; no external plugin adapters (an oracle or a lifecycle hook can veto burns);
-/// and the UpdateDelegate is PINNED: exactly one, owned by the update authority (never an address the creator keeps),
-/// with at most one additional delegate and that one the candy machine's authority PDA. Otherwise a delegate the
-/// creator kept could hand the collection back to themselves after init and block every refund.
-/// Layout per the MPL Core account docs, as nfi_raffle reads it.
-pub fn screen_collection(data: &[u8], cm_authority: &Pubkey) -> Result<()> {
+/// 1 and 2, round 4 L-004/L-014). Allowlist of plugin types; no plugin under an Address authority (a key the creator kept
+/// could update it while the escrow holds the collection); no external plugin adapters (an oracle or a lifecycle hook can
+/// veto burns); the UpdateDelegate PINNED: exactly one, owned by the update authority, with at most one additional
+/// delegate and that one the candy machine's authority PDA; and nothing minted yet, so every asset of the collection is
+/// one this escrow minted and wrote a receipt for. Layout per the MPL Core account docs, as nfi_raffle reads it.
+pub fn screen_collection(data: &[u8], cm_authority: &Pubkey, has_reveal: bool) -> Result<()> {
     require!(data.len() >= 33 && data[0] == KEY_COLLECTION_V1, EscrowError::CoreUnreadable);
     let mut o = 1 + 32; // key, update authority
     o += 4 + rd_u32(data, o)? as usize; // name
     o += 4 + rd_u32(data, o)? as usize; // uri
-    o += 8; // num_minted, current_size
+    require!(rd_u32(data, o)? == 0 && rd_u32(data, o + 4)? == 0, EscrowError::CollectionNotEmpty); // num_minted, current_size
+    o += 8;
     if o >= data.len() { return Ok(()); } // no plugin header: no plugins at all
     require!(data[o] == 3, EscrowError::CollectionPluginRefused); // PluginHeaderV1
     let reg = rd_u64(data, o + 1)? as usize;
@@ -77,10 +128,11 @@ pub fn screen_collection(data: &[u8], cm_authority: &Pubkey) -> Result<()> {
     for _ in 0..n {
         let plugin_type = *data.get(p).ok_or(EscrowError::CoreUnreadable)?;
         require!(PLUGINS_ALLOWED.contains(&plugin_type), EscrowError::CollectionPluginRefused);
+        // A committed reveal must be able to write the metadata it committed to.
+        require!(!(has_reveal && plugin_type == PLUGIN_IMMUTABLE_METADATA), EscrowError::CollectionPluginRefused);
         let auth = *data.get(p + 1).ok_or(EscrowError::CoreUnreadable)?; // Authority: 0 None | 1 Owner | 2 UpdateAuthority | 3 Address(pk)
-        require!(auth <= 3, EscrowError::CollectionPluginRefused);
-        let auth_len = if auth == 3 { 32 } else { 0 };
-        let offset = rd_u64(data, p + 2 + auth_len)? as usize;
+        require!(auth <= 2, EscrowError::CollectionPluginRefused);
+        let offset = rd_u64(data, p + 2)? as usize;
         if plugin_type == PLUGIN_UPDATE_DELEGATE {
             update_delegates += 1;
             require!(update_delegates == 1 && auth == 2, EscrowError::CollectionPluginRefused);
@@ -90,7 +142,7 @@ pub fn screen_collection(data: &[u8], cm_authority: &Pubkey) -> Result<()> {
             require!(k <= 1, EscrowError::CollectionPluginRefused);
             if k == 1 { require!(rd_pk(data, offset + 5)? == *cm_authority, EscrowError::CollectionPluginRefused); }
         }
-        p += 2 + auth_len + 8;
+        p += 2 + 8;
     }
     require!(rd_u32(data, p)? == 0, EscrowError::CollectionPluginRefused); // external plugin adapters
     Ok(())
@@ -152,5 +204,98 @@ pub fn hand_collection<'info>(collection: &AccountInfo<'info>, payer: &AccountIn
     ];
     let ix = Instruction { program_id: MPL_CORE_ID, accounts: metas, data: vec![IX_UPDATE_COLLECTION_V1, 0, 0] };
     invoke_signed(&ix, &[collection.clone(), payer.clone(), authority.clone(), to.clone(), system.clone(), core.clone()], seeds)?;
+    Ok(())
+}
+
+/// Candy Machine set_mint_authority: candy_machine (w), authority (s), new mint_authority (s).
+pub fn cm_set_mint_authority<'info>(cm: &AccountInfo<'info>, authority: &AccountInfo<'info>, new_mint_authority: &AccountInfo<'info>, program: &AccountInfo<'info>, seeds: &[&[&[u8]]]) -> Result<()> {
+    let metas = vec![AccountMeta::new(cm.key(), false), AccountMeta::new_readonly(authority.key(), true), AccountMeta::new_readonly(new_mint_authority.key(), true)];
+    let ix = Instruction { program_id: CANDY_MACHINE_ID, accounts: metas, data: CM_SET_MINT_AUTHORITY.to_vec() };
+    invoke_signed(&ix, &[cm.clone(), authority.clone(), new_mint_authority.clone(), program.clone()], seeds)?;
+    Ok(())
+}
+
+/// Candy Machine set_authority(new_authority): candy_machine (w), authority (s).
+pub fn cm_set_authority<'info>(cm: &AccountInfo<'info>, authority: &AccountInfo<'info>, new_authority: &Pubkey, program: &AccountInfo<'info>, seeds: &[&[&[u8]]]) -> Result<()> {
+    let metas = vec![AccountMeta::new(cm.key(), false), AccountMeta::new_readonly(authority.key(), true)];
+    let mut data = CM_SET_AUTHORITY.to_vec();
+    data.extend_from_slice(new_authority.as_ref());
+    let ix = Instruction { program_id: CANDY_MACHINE_ID, accounts: metas, data };
+    invoke_signed(&ix, &[cm.clone(), authority.clone(), program.clone()], seeds)?;
+    Ok(())
+}
+
+pub struct MintAccounts<'a, 'info> {
+    pub candy_machine: &'a AccountInfo<'info>,
+    pub authority_pda: &'a AccountInfo<'info>,
+    pub mint_authority: &'a AccountInfo<'info>,
+    pub payer: &'a AccountInfo<'info>,
+    pub owner: &'a AccountInfo<'info>,
+    pub asset: &'a AccountInfo<'info>,
+    pub collection: &'a AccountInfo<'info>,
+    pub core: &'a AccountInfo<'info>,
+    pub system: &'a AccountInfo<'info>,
+    pub instructions: &'a AccountInfo<'info>,
+    pub slot_hashes: &'a AccountInfo<'info>,
+    pub program: &'a AccountInfo<'info>,
+}
+
+/// Candy Machine mint_asset with no plugins, signed by the escrow PDA as the machine's mint authority: candy_machine (w),
+/// authority_pda (w), mint_authority (s), payer (s, w), asset_owner, asset (s, w), collection (w), core, system,
+/// instructions sysvar, slot hashes.
+pub fn cm_mint_asset(a: &MintAccounts, seeds: &[&[&[u8]]]) -> Result<()> {
+    let metas = vec![
+        AccountMeta::new(a.candy_machine.key(), false),
+        AccountMeta::new(a.authority_pda.key(), false),
+        AccountMeta::new_readonly(a.mint_authority.key(), true),
+        AccountMeta::new(a.payer.key(), true),
+        AccountMeta::new_readonly(a.owner.key(), false),
+        AccountMeta::new(a.asset.key(), true),
+        AccountMeta::new(a.collection.key(), false),
+        AccountMeta::new_readonly(MPL_CORE_ID, false),
+        AccountMeta::new_readonly(a.system.key(), false),
+        AccountMeta::new_readonly(a.instructions.key(), false),
+        AccountMeta::new_readonly(a.slot_hashes.key(), false),
+    ];
+    let mut data = CM_MINT_ASSET.to_vec();
+    data.extend_from_slice(&0u32.to_le_bytes()); // MintAssetArgs { plugins: vec![] }
+    let ix = Instruction { program_id: CANDY_MACHINE_ID, accounts: metas, data };
+    invoke_signed(&ix, &[
+        a.candy_machine.clone(), a.authority_pda.clone(), a.mint_authority.clone(), a.payer.clone(), a.owner.clone(), a.asset.clone(),
+        a.collection.clone(), a.core.clone(), a.system.clone(), a.instructions.clone(), a.slot_hashes.clone(), a.program.clone(),
+    ], seeds)?;
+    Ok(())
+}
+
+/// The reveal commitment's leaf for one item: sha256(0x00 | mint_index u64 LE | u32 len | name | u32 len | uri).
+pub fn reveal_leaf(mint_index: u64, name: &str, uri: &str) -> [u8; 32] {
+    hashv(&[&[0u8], &mint_index.to_le_bytes(), &(name.len() as u32).to_le_bytes(), name.as_bytes(), &(uri.len() as u32).to_le_bytes(), uri.as_bytes()]).to_bytes()
+}
+
+/// Walks a proof up to the root; each node is sha256(0x01 | smaller | larger), so no position bits are needed.
+pub fn reveal_root_of(leaf: [u8; 32], proof: &[[u8; 32]]) -> [u8; 32] {
+    let mut h = leaf;
+    for p in proof {
+        let (a, b) = if h <= *p { (h, *p) } else { (*p, h) };
+        h = hashv(&[&[1u8], &a, &b]).to_bytes();
+    }
+    h
+}
+
+/// AddPluginV1 of ImmutableMetadata under no authority (permanent) on one asset, signed by the escrow PDA as the collection's
+/// update authority: asset (w), collection (w), payer (s, w), authority (s), system, log wrapper (none). Data: ix 2 |
+/// Plugin variant 12 (ImmutableMetadata, no fields) | init_authority Some(Authority::None). On the asset, not the collection:
+/// a collection-level ImmutableMetadata also refuses the update-authority handover, so the collection could never go back.
+pub fn lock_asset_metadata<'info>(asset: &AccountInfo<'info>, collection: &AccountInfo<'info>, payer: &AccountInfo<'info>, escrow: &AccountInfo<'info>, system: &AccountInfo<'info>, core: &AccountInfo<'info>, seeds: &[&[&[u8]]]) -> Result<()> {
+    let metas = vec![
+        AccountMeta::new(asset.key(), false),
+        AccountMeta::new(collection.key(), false),
+        AccountMeta::new(payer.key(), true),
+        AccountMeta::new_readonly(escrow.key(), true),
+        AccountMeta::new_readonly(system.key(), false),
+        AccountMeta::new_readonly(MPL_CORE_ID, false),
+    ];
+    let ix = Instruction { program_id: MPL_CORE_ID, accounts: metas, data: vec![IX_ADD_PLUGIN_V1, PLUGIN_IMMUTABLE_METADATA, 1, 0] };
+    invoke_signed(&ix, &[asset.clone(), collection.clone(), payer.clone(), escrow.clone(), system.clone(), core.clone()], seeds)?;
     Ok(())
 }
