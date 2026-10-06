@@ -1,6 +1,8 @@
 // Creates (or shows) the program's config with the upgrade authority's wallet. No Anchor client: the instruction is
-// built by hand from the IDL (discriminator + one pubkey argument), the way the service builds every other one.
-//   RPC=https://api.devnet.solana.com node ops/init-config.mjs <nfi_authority> <treasury>
+// built by hand from the IDL (discriminator + two pubkey arguments), the way the service builds every other one.
+//   RPC=https://api.devnet.solana.com node ops/init-config.mjs <nfi_authority> <canceller> <treasury>
+// nfi_authority is the service's hot key (pause, permit rotation, phase co-sign, init co-sign); canceller is the cold key
+// that may cancel a launch (the NFI Programs multisig vault on mainnet). They must differ.
 //   RPC=... node ops/init-config.mjs --show
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -10,7 +12,7 @@ import { Connection, Keypair, PublicKey, SystemProgram, Transaction, Transaction
 const PROGRAM = new PublicKey("3qRS59TJmgaNUzKjKsUe3XGggodSXA9GHU9Q5u2ffE1n");
 const BPF_UPGRADEABLE = new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111");
 const conn = new Connection(process.env.RPC ?? "https://api.devnet.solana.com", "confirmed");
-const configPda = PublicKey.findProgramAddressSync([Buffer.from("config")], PROGRAM)[0];
+const configPda = PublicKey.findProgramAddressSync([Buffer.from("config2")], PROGRAM)[0];
 const programData = PublicKey.findProgramAddressSync([PROGRAM.toBuffer()], BPF_UPGRADEABLE)[0];
 const disc = (name) => createHash("sha256").update(`global:${name}`).digest().subarray(0, 8);
 
@@ -22,8 +24,8 @@ async function show() {
   const pk = () => { const v = new PublicKey(d.subarray(o, o + 32)); o += 32; return v; };
   const authority = pk();
   const pending = d[o++] === 1 ? pk() : null;
-  const nfi = pk(), treasury = pk();
-  console.log(JSON.stringify({ config: configPda.toBase58(), authority: authority.toBase58(), pendingAuthority: pending?.toBase58() ?? null, nfiAuthority: nfi.toBase58(), treasury: treasury.toBase58() }, null, 2));
+  const nfi = pk(), canceller = pk(), treasury = pk();
+  console.log(JSON.stringify({ config: configPda.toBase58(), authority: authority.toBase58(), pendingAuthority: pending?.toBase58() ?? null, nfiAuthority: nfi.toBase58(), canceller: canceller.toBase58(), treasury: treasury.toBase58() }, null, 2));
 }
 if (process.argv[2] === "--show") { await show(); process.exit(0); }
 const walletOf = () => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(process.env.ANCHOR_WALLET ?? `${homedir()}/.config/solana/id.json`, "utf8"))));
@@ -52,8 +54,8 @@ if (process.argv[2] === "--accept-ix") {
   console.log(JSON.stringify({ programId: PROGRAM.toBase58(), accounts: [{ pubkey: configPda.toBase58(), isSigner: false, isWritable: true }, { pubkey: next.toBase58(), isSigner: true, isWritable: false }], data: disc("accept_authority").toString("hex") }, null, 2));
   process.exit(0);
 }
-const [nfiArg, treasuryArg] = process.argv.slice(2);
-if (!nfiArg || !treasuryArg) { console.error("usage: init-config.mjs <nfi_authority> <treasury> | --show"); process.exit(2); }
+const [nfiArg, cancellerArg, treasuryArg] = process.argv.slice(2);
+if (!nfiArg || !cancellerArg || !treasuryArg) { console.error("usage: init-config.mjs <nfi_authority> <canceller> <treasury> | --show"); process.exit(2); }
 const wallet = walletOf();
 if (await conn.getAccountInfo(configPda)) { console.log("config already exists"); await show(); process.exit(0); }
 const ix = new TransactionInstruction({
@@ -66,7 +68,7 @@ const ix = new TransactionInstruction({
     { pubkey: new PublicKey(treasuryArg), isSigner: false, isWritable: false },
     { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
   ],
-  data: Buffer.concat([disc("init_config"), new PublicKey(nfiArg).toBuffer()]),
+  data: Buffer.concat([disc("init_config"), new PublicKey(nfiArg).toBuffer(), new PublicKey(cancellerArg).toBuffer()]),
 });
 const bh = await conn.getLatestBlockhash("confirmed");
 const tx = new Transaction({ feePayer: wallet.publicKey, ...bh }).add(ix);

@@ -20,7 +20,7 @@ idl-build = ["anchor-lang/idl-build"]
 test = []
 
 [dependencies]
-anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
+anchor-lang = { version = "=0.31.1", features = ["init-if-needed"] }
 # MPL Core's Rust client is not linked: one of its deserialisers overflows the SBF stack frame (learned on nfi_raffle).
 # The one Core instruction this program sends, BurnV1, is built by hand in instructions/refund.rs.
 

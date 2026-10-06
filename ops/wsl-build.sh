@@ -39,8 +39,13 @@ case "$cmd" in
     ls -la target/deploy/*.so target/idl/*.json 2>/dev/null;;
   build-release)
     # The PRODUCTION program: no test feature (a one-hour minimum window). Copied to the Windows checkout as target/deploy/nfi_launch_escrow.prod.so.
+    # The deploy scripts take ONLY target/prod/ (round 4, L-041): a later test build overwrites target/deploy and target/idl,
+    # never target/prod, and the deploy refuses a binary whose sha256 is not the one recorded here with a 3600 s IDL.
     cd "$DST" && anchor build 2>&1 | grep -E -e "^error" -e "Finished" | head -5
-    cp target/deploy/nfi_launch_escrow.so "$SRC/target/deploy/nfi_launch_escrow.prod.so" && ls -la "$SRC/target/deploy/nfi_launch_escrow.prod.so" | awk '{print $5" bytes"}';;
+    grep -q '"value": "3600"' target/idl/nfi_launch_escrow.json || { echo "the release IDL does not say MIN_WINDOW_SECS = 3600"; exit 1; }
+    mkdir -p target/prod && cp target/deploy/nfi_launch_escrow.so target/prod/ && cp target/idl/nfi_launch_escrow.json target/prod/
+    (cd target/prod && sha256sum nfi_launch_escrow.so > nfi_launch_escrow.so.sha256 && cat nfi_launch_escrow.so.sha256)
+    cp target/prod/nfi_launch_escrow.so "$SRC/target/deploy/nfi_launch_escrow.prod.so" && ls -la "$SRC/target/deploy/nfi_launch_escrow.prod.so" | awk '{print $5" bytes"}';;
   test)
     cd "$DST"
     pkill -f "solana-test-validator" 2>/dev/null; sleep 1
