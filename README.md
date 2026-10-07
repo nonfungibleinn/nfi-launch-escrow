@@ -9,7 +9,7 @@ Program id: `3qRS59TJmgaNUzKjKsUe3XGggodSXA9GHU9Q5u2ffE1n`. The deploy keypair i
 
 ## Status
 
-Revision 0.5 (6 October 2026): the round-4 review fixes (an independent multi-reviewer audit of program and service).
+Revision 0.5.1 (7 October 2026; 0.5 on 6 October): the round-4 review fixes (an independent multi-reviewer audit of program and service).
 The suite (26 cases, real MPL Core, Core Candy Machine and Candy Guard fixtures from mainnet) passes on a local
 validator. Devnet only. Not independently audited.
 
@@ -89,7 +89,7 @@ because a collection-level ImmutableMetadata also refuses the handover of the up
 | return_collection | anyone, to the creator | final (see above) |
 | close_receipt | anyone | Released, and the asset revealed if a reveal is committed |
 | close_counter | anyone | not Open |
-| close_escrow | the creator | final, fee leg done, collection returned, no open receipt |
+| close_escrow | the creator | final, fee leg done, collection returned, no open receipt, no open mint counter (their rent is the minters') |
 
 Rotating a key in the config revokes the old one on every live escrow at once. The payout wallet, the treasury, the
 window and the prices are fixed at init and never change. Payout and treasury must be plain, rent-exempt system wallets
