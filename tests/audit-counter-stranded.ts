@@ -67,15 +67,15 @@ describe("audit: a mint counter's rent after close_escrow", () => {
     await program.methods.cancel().accounts({ config: configPda, escrow, signer: creator.publicKey } as any).signers([creator]).rpc();
     await program.methods.refund().accounts({ escrow, vault, receipt, minter: minter.publicKey, asset: asset.publicKey, collection, signer: minter.publicKey, mplCoreProgram: CORE, systemProgram: SystemProgram.programId } as any).signers([minter]).rpc();
     await program.methods.returnCollection().accounts({ escrow, collection, candyMachine: cm, creator: creator.publicKey, payer: creator.publicKey, candyMachineProgram: CANDY_MACHINE, mplCoreProgram: CORE, systemProgram: SystemProgram.programId } as any).signers([creator]).rpc();
-    await program.methods.closeEscrow().accounts({ escrow, vault, creator: creator.publicKey } as any).signers([creator]).rpc();
-    const stranded = (await conn.getAccountInfo(counter, "confirmed"))?.lamports ?? 0;
-    console.log(`counter ${counter.toBase58()} still holds ${stranded} lamports of the minter's after close_escrow`);
-    // the property: someone can still return the counter's rent to the minter
+    // the fix: the escrow cannot close while a counter (the minter's rent) is open; closing the counter first returns it
     let err = "";
-    try {
-      await program.methods.closeCounter().accounts({ escrow, counter, minter: minter.publicKey, signer: minter.publicKey } as any).signers([minter]).rpc();
-    } catch (e: any) { err = String(e?.message ?? e); }
-    expect(err, "close_counter after close_escrow").to.equal("");
+    try { await program.methods.closeEscrow().accounts({ escrow, vault, creator: creator.publicKey } as any).signers([creator]).rpc(); }
+    catch (e: any) { err = String(e?.message ?? e) + JSON.stringify(e?.logs ?? []); }
+    expect(err, "close_escrow with a counter open").to.include("CountersOpen");
+    const m0 = await conn.getBalance(minter.publicKey, "confirmed");
+    await program.methods.closeCounter().accounts({ escrow, counter, minter: minter.publicKey, signer: creator.publicKey } as any).signers([creator]).rpc();
     expect((await conn.getAccountInfo(counter, "confirmed"))?.lamports ?? 0).to.equal(0);
+    expect(await conn.getBalance(minter.publicKey, "confirmed")).to.be.greaterThan(m0); // the rent went back to the minter
+    await program.methods.closeEscrow().accounts({ escrow, vault, creator: creator.publicKey } as any).signers([creator]).rpc();
   });
 });

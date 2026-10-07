@@ -48,5 +48,6 @@ pub fn close_escrow(ctx: Context<CloseEscrow>) -> Result<()> {
     require!(e.receipts_open == 0, EscrowError::ReceiptsOpen);
     if e.status == EscrowStatus::Released { require!(e.fee_released || e.fee_in == e.fee_refunded, EscrowError::FeeNotReleased); }
     require!(e.collection_returned, EscrowError::NotFinal);
+    require!(e.counters_open == 0, EscrowError::CountersOpen);
     Ok(())
 }

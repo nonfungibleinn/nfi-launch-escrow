@@ -386,7 +386,9 @@ describe("nfi_launch_escrow", () => {
       const b0 = await bal(minterB.publicKey);
       await refund(L, a4, minterB.publicKey, minterB);
       expect((await bal(minterB.publicKey)) - b0).to.be.greaterThan(SOL(1).toNumber());
+      await fails(closeEscrow(L), "CountersOpen"); // minters' counter rent first (property test, round 4)
       await closeCounter(L, minterA.publicKey, 1);
+      await closeCounter(L, minterB.publicKey, 1);
       await closeEscrow(L);
     });
   });
@@ -477,7 +479,10 @@ describe("nfi_launch_escrow", () => {
       await refund(L, as[2]!, minterA.publicKey, minterA); await check();
       expect(await bal(L.vault)).to.equal(rent);
       await returnCollection(L);
+      await fails(closeEscrow(L), "CountersOpen");
+      for (const [w, g] of [[minterA, 0], [minterB, 1], [minterA, 1]] as const) await closeCounter(L, w.publicKey, g);
       await closeEscrow(L);
+      expect((await program.account.launchEscrow.fetchNullable(L.escrow))).to.equal(null);
     });
   });
 });

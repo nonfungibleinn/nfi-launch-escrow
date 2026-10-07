@@ -67,7 +67,8 @@ pub fn pay_and_mint(ctx: Context<PayAndMint>, group: u8) -> Result<()> {
     let per_wallet = g.per_wallet;
     g.minted = g.minted.checked_add(1).ok_or(EscrowError::Overflow)?;
     let c = &mut ctx.accounts.counter;
-    if c.escrow == Pubkey::default() {
+    let new_counter = c.escrow == Pubkey::default();
+    if new_counter {
         c.bump = ctx.bumps.counter;
         c.escrow = escrow_key;
         c.minter = minter_key;
@@ -80,6 +81,7 @@ pub fn pay_and_mint(ctx: Context<PayAndMint>, group: u8) -> Result<()> {
     }
     let mint_index = candy_machine_view(&ctx.accounts.candy_machine.try_borrow_data()?)?.items_redeemed;
     let e = &mut ctx.accounts.escrow;
+    if new_counter { e.counters_open = e.counters_open.checked_add(1).ok_or(EscrowError::Overflow)?; }
     e.price_in = e.price_in.checked_add(price).ok_or(EscrowError::Overflow)?;
     e.fee_in = e.fee_in.checked_add(fee).ok_or(EscrowError::Overflow)?;
     e.receipts = e.receipts.checked_add(1).ok_or(EscrowError::Overflow)?;
@@ -128,7 +130,7 @@ pub fn pay_and_mint(ctx: Context<PayAndMint>, group: u8) -> Result<()> {
 /// Anyone, once the escrow is no longer open: a mint counter's rent goes back to its minter.
 #[derive(Accounts)]
 pub struct CloseCounter<'info> {
-    #[account(seeds = [ESCROW_SEED, escrow.candy_machine.as_ref()], bump = escrow.bump)]
+    #[account(mut, seeds = [ESCROW_SEED, escrow.candy_machine.as_ref()], bump = escrow.bump)]
     pub escrow: Box<Account<'info, LaunchEscrow>>,
     #[account(mut, close = minter, has_one = escrow, has_one = minter)]
     pub counter: Account<'info, MintCounter>,
@@ -139,6 +141,8 @@ pub struct CloseCounter<'info> {
 }
 
 pub fn close_counter(ctx: Context<CloseCounter>) -> Result<()> {
-    require!(ctx.accounts.escrow.status != EscrowStatus::Open, EscrowError::NotFinal);
+    let e = &mut ctx.accounts.escrow;
+    require!(e.status != EscrowStatus::Open, EscrowError::NotFinal);
+    e.counters_open = e.counters_open.checked_sub(1).ok_or(EscrowError::Overflow)?;
     Ok(())
 }

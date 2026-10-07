@@ -55,7 +55,9 @@ pub fn asset_owner_and_collection(data: &[u8]) -> Result<(Pubkey, Option<Pubkey>
 pub fn asset_gone(a: &AccountInfo) -> Result<bool> {
     let data = a.try_borrow_data()?;
     if *a.owner == MPL_CORE_ID { return Ok(data.len() == 1 && data[0] == KEY_UNINITIALIZED); }
-    Ok(*a.owner == anchor_lang::system_program::ID && data.len() <= 1 && data.iter().all(|b| *b == 0))
+    // A System-owned account can only hold zeros (the System Program never writes data), so any length is a burned
+    // asset: someone holding the asset's old keypair cannot block the crank by re-creating the account with space.
+    Ok(*a.owner == anchor_lang::system_program::ID && data.iter().all(|b| *b == 0))
 }
 
 /// A collection's update authority: key(1) | update_authority(32).

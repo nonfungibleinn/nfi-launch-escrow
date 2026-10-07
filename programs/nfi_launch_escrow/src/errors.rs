@@ -94,4 +94,6 @@ pub enum EscrowError {
     BadRevealProof,
     #[msg("The asset's committed reveal has not happened yet")]
     RevealPending,
+    #[msg("Mint counters are still open; close them first (their rent goes back to the minters)")]
+    CountersOpen,
 }

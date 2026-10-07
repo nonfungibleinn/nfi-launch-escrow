@@ -157,6 +157,9 @@ pub struct LaunchEscrow {
     /// Receipts written, and how many are still open (not refunded and not closed).
     pub receipts: u64,
     pub receipts_open: u64,
+    /// Mint counters not yet closed: each holds its minter's rent, so the escrow cannot close before they do (round 4
+    /// property test: a closed escrow left counters that could never be closed).
+    pub counters_open: u32,
 }
 
 impl LaunchEscrow {
