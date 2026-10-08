@@ -113,6 +113,8 @@ Inside WSL (the SBF toolchain does not like `/mnt/c`):
 bash ops/wsl-build.sh sync && bash ops/wsl-build.sh pin && bash ops/wsl-build.sh build && bash ops/wsl-build.sh test
 ```
 
+The value-conservation property test (`tests/audit-property.ts`: a model of every escrow, vault, receipt and counter checked after each of about 12,000 random actions over 4 seeds) runs on its own with `bash ops/wsl-build.sh property`, about 50 minutes, on a validator on private ports; the default `test` runs the suite only.
+
 `--features test` shortens the minimum window to five seconds and the two 30-day grace periods to six seconds so the
 whole life runs in one test. Never on for a deploy: `bash ops/wsl-build.sh build-release` writes the production binary,
 its IDL and its sha256 to `target/prod/`, and `ops/devnet.sh` and `ops/mainnet.sh` deploy only that binary, only if its

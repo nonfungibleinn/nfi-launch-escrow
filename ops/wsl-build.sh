@@ -5,7 +5,8 @@
 #   bash ops/wsl-build.sh keypair  # program keypair (once); prints the id to put in Anchor.toml and lib.rs
 #   bash ops/wsl-build.sh pin      # a Cargo.lock the SBF toolchain can parse
 #   bash ops/wsl-build.sh build    # anchor build --features test
-#   bash ops/wsl-build.sh test     # anchor test --features test (local validator), full log in ~/nfi-launch-escrow-test.log
+#   bash ops/wsl-build.sh test     # anchor test --features test (local validator): the suite, full log in ~/nfi-launch-escrow-test.log
+#   bash ops/wsl-build.sh property # the value-conservation property test, alone on private ports (~50 min; build first)
 #   bash ops/wsl-build.sh lock     # Cargo.lock back to the Windows checkout
 set -uo pipefail
 export PATH="$HOME/.local/share/solana/install/active_release/bin:$HOME/.cargo/bin:$PATH"
@@ -52,6 +53,24 @@ case "$cmd" in
     rm -rf .anchor/test-ledger
     anchor test --skip-build -- --features test > "$HOME/nfi-launch-escrow-test.log" 2>&1; echo "EXIT=$?" >> "$HOME/nfi-launch-escrow-test.log"
     grep -v -e "^   Compiling" -e Downloaded "$HOME/nfi-launch-escrow-test.log" | grep -E -e "passing|failing|pending|✔|✓|[0-9]+\) |Error|error|EXIT=|AssertionError|expected" | tail -80;;
+  property)
+    # The value-conservation property test (tests/audit-property.ts, about 50 minutes): ALONE on its own validator on
+    # private ports. It creates the program's config with its own keys, so it never shares a validator with the suite;
+    # the faucet is kept off rpc + 1, where clients open their websocket. Full log in ~/nfi-launch-escrow-property.log.
+    cd "$DST"
+    rm -rf /tmp/nfi-prop-ledger
+    solana-test-validator --reset --quiet --ledger /tmp/nfi-prop-ledger --bind-address 127.0.0.1 --rpc-port 41899 --faucet-port 41950 --gossip-port 41001 --dynamic-port-range 41002-41040 \
+      --upgradeable-program 3qRS59TJmgaNUzKjKsUe3XGggodSXA9GHU9Q5u2ffE1n target/deploy/nfi_launch_escrow.so ~/.config/solana/id.json \
+      --bpf-program CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d tests/fixtures/mpl_core.so \
+      --bpf-program CMACYFENjoBMHzapRXyo1JZkVS6EtaDDzkjMrmQLvr4J tests/fixtures/mpl_core_candy_machine.so \
+      --bpf-program CMAGAKJ67e9hRZgfC5SFTbZH8MgEmtqazKXjmkaJjWTJ tests/fixtures/mpl_core_candy_guard.so >/tmp/nfi-prop-validator.out 2>&1 &
+    vp=$!
+    for i in $(seq 1 120); do s=$(solana -u http://127.0.0.1:41899 slot 2>/dev/null || echo 0); [ "${s:-0}" -ge 20 ] && break; sleep 2; done
+    ANCHOR_PROVIDER_URL=http://127.0.0.1:41899 ANCHOR_WALLET=$HOME/.config/solana/id.json NODE_OPTIONS=--no-experimental-strip-types \
+      yarn run -s ts-mocha -p ./tsconfig.json -t 10000000 tests/audit-property.ts > "$HOME/nfi-launch-escrow-property.log" 2>&1
+    echo "EXIT=$?" >> "$HOME/nfi-launch-escrow-property.log"
+    kill $vp 2>/dev/null
+    grep -a -E "passing|failing|PROP VIOLATION|EXIT=" "$HOME/nfi-launch-escrow-property.log" | cut -c1-300 | tail -10;;
   testlog)
     tail -120 "$HOME/nfi-launch-escrow-test.log";;
   lint)
