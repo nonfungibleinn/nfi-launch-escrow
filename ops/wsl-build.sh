@@ -6,6 +6,7 @@
 #   bash ops/wsl-build.sh pin      # a Cargo.lock the SBF toolchain can parse
 #   bash ops/wsl-build.sh build    # anchor build --features test
 #   bash ops/wsl-build.sh test     # anchor test --features test (local validator): the suite, full log in ~/nfi-launch-escrow-test.log
+#   bash ops/wsl-build.sh build-verifiable # production build in the solana-verify docker image -> target/prod (needs docker)
 #   bash ops/wsl-build.sh property # the value-conservation property test, alone on private ports (~50 min; build first)
 #   bash ops/wsl-build.sh lock     # Cargo.lock back to the Windows checkout
 set -uo pipefail
@@ -30,7 +31,8 @@ case "$cmd" in
   pin)
     cd "$DST"
     [ -f Cargo.lock ] || cargo generate-lockfile -q
-    for pair in crypto-common:0.1.6 hashbrown:0.15.5 block-buffer:0.10.4 digest:0.10.7 indexmap:2.9.0 bytemuck:1.23.0; do
+    # blake3 1.5.5: newer releases pull digest 0.11 / block-buffer 0.12 (Rust 2024 manifests) that the verifiable-build image cannot read.
+    for pair in crypto-common:0.1.6 hashbrown:0.15.5 block-buffer:0.10.4 digest:0.10.7 indexmap:2.9.0 bytemuck:1.23.0 blake3:1.5.5; do
       crate=${pair%%:*}; ver=${pair##*:}
       cargo update -q "$crate" --precise "$ver" 2>/dev/null && echo "pinned $crate $ver"
     done
@@ -47,6 +49,17 @@ case "$cmd" in
     mkdir -p target/prod && cp target/deploy/nfi_launch_escrow.so target/prod/ && cp target/idl/nfi_launch_escrow.json target/prod/
     (cd target/prod && sha256sum nfi_launch_escrow.so > nfi_launch_escrow.so.sha256 && cat nfi_launch_escrow.so.sha256)
     cp target/prod/nfi_launch_escrow.so "$SRC/target/deploy/nfi_launch_escrow.prod.so" && ls -la "$SRC/target/deploy/nfi_launch_escrow.prod.so" | awk '{print $5" bytes"}';;
+  build-verifiable)
+    # The PRODUCTION program built reproducibly in the Solana Foundation's docker image (solana-verify), so anyone can
+    # rebuild the deployed bytes from this repository at a commit. Writes target/prod like build-release; the deploy
+    # scripts then ship exactly these bytes. The IDL comes from a plain release build (3600 s minimum window).
+    cd "$DST" && anchor build 2>&1 | grep -E -e "^error" -e "Finished" | head -3
+    grep -q '"value": "3600"' target/idl/nfi_launch_escrow.json || { echo "the release IDL does not say MIN_WINDOW_SECS = 3600"; exit 1; }
+    solana-verify build --library-name nfi_launch_escrow 2>&1 | tail -3
+    mkdir -p target/prod && cp target/deploy/nfi_launch_escrow.so target/prod/ && cp target/idl/nfi_launch_escrow.json target/prod/
+    (cd target/prod && sha256sum nfi_launch_escrow.so > nfi_launch_escrow.so.sha256)
+    echo "verifiable hash: $(solana-verify get-executable-hash target/prod/nfi_launch_escrow.so)"
+    cp target/prod/nfi_launch_escrow.so "$SRC/target/deploy/nfi_launch_escrow.prod.so";;
   test)
     cd "$DST"
     pkill -f "solana-test-validator" 2>/dev/null; sleep 1
