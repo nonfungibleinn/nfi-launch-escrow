@@ -118,8 +118,17 @@ The value-conservation property test (`tests/audit-property.ts`: a model of ever
 `--features test` shortens the minimum window to five seconds and the two 30-day grace periods to six seconds so the
 whole life runs in one test. Never on for a deploy: `bash ops/wsl-build.sh build-release` writes the production binary,
 its IDL and its sha256 to `target/prod/`, and `ops/devnet.sh` and `ops/mainnet.sh` deploy only that binary, only if its
-hash matches and its IDL says `MIN_WINDOW_SECS` = 3600. `anchor-lang` is pinned exactly. Builds are not yet verifiable
-(`solana-verify`); compare the on-chain bytes with `ops/<cluster>.sh hash`.
+hash matches and its IDL says `MIN_WINDOW_SECS` = 3600. `anchor-lang` is pinned exactly.
+
+**Verifiable build.** `bash ops/wsl-build.sh build-verifiable` builds the production program in the Solana Foundation's
+verifiable-build image (`solanafoundation/solana-verifiable-build:4.2.2`, needs docker) into `target/prod`; deploy those
+bytes. Anyone can then check the deployed program against this repository:
+
+```
+solana-verify verify-from-repo -u devnet --program-id 3qRS59TJmgaNUzKjKsUe3XGggodSXA9GHU9Q5u2ffE1n \n  --library-name nfi_launch_escrow --base-image solanafoundation/solana-verifiable-build:4.2.2 \n  --commit-hash <commit> https://github.com/nonfungibleinn/nfi-launch-escrow
+```
+
+On devnet the program at commit `c6b7113` verifies (hash `602fe0a6…`), with the verification record on chain.
 
 ## What a refund cannot do
 
