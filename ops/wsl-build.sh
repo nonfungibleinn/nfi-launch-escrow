@@ -55,7 +55,9 @@ case "$cmd" in
     # scripts then ship exactly these bytes. The IDL comes from a plain release build (3600 s minimum window).
     cd "$DST" && anchor build 2>&1 | grep -E -e "^error" -e "Finished" | head -3
     grep -q '"value": "3600"' target/idl/nfi_launch_escrow.json || { echo "the release IDL does not say MIN_WINDOW_SECS = 3600"; exit 1; }
-    solana-verify build --library-name nfi_launch_escrow 2>&1 | tail -3
+    # The image of the same Solana toolchain the tests build with (4.2.2); the default image for solana-program 2.3 has a
+    # Cargo too old for some dependencies. A verifier passes the same --base-image to solana-verify verify-from-repo.
+    solana-verify build --base-image solanafoundation/solana-verifiable-build:4.2.2 --library-name nfi_launch_escrow 2>&1 | tail -3
     mkdir -p target/prod && cp target/deploy/nfi_launch_escrow.so target/prod/ && cp target/idl/nfi_launch_escrow.json target/prod/
     (cd target/prod && sha256sum nfi_launch_escrow.so > nfi_launch_escrow.so.sha256)
     echo "verifiable hash: $(solana-verify get-executable-hash target/prod/nfi_launch_escrow.so)"
