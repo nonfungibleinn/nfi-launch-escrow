@@ -132,7 +132,8 @@ bytes. Anyone can then check the deployed program against this repository:
 solana-verify verify-from-repo -u devnet --program-id 3qRS59TJmgaNUzKjKsUe3XGggodSXA9GHU9Q5u2ffE1n \n  --library-name nfi_launch_escrow --base-image solanafoundation/solana-verifiable-build:4.2.2 \n  --commit-hash <commit> https://github.com/nonfungibleinn/nfi-launch-escrow
 ```
 
-On devnet the program at commit `c6b7113` verifies (hash `602fe0a6…`), with the verification record on chain.
+On devnet the program at commit `e41551d` (revision 0.5.2) verifies (executable hash `4db9da8b…`), with the verification record
+on chain; before it, `c6b7113` (0.5.1, hash `602fe0a6…`).
 
 ## What a refund cannot do
 
