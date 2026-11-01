@@ -279,6 +279,7 @@ describe("nfi_launch_escrow", () => {
       const r = await program.account.mintReceipt.fetch(receiptPda(L.escrow, a));
       expect(r.minter.toBase58()).to.equal(minterA.publicKey.toBase58());
       expect(r.price.toString()).to.equal(SOL(0.5).toString());
+      expect(r.mintIndex.toNumber()).to.equal(0); // the machine's redeemed count before this mint = the escrow's receipts before it
       const asset = await fetchAsset(umiA, pk(a));
       expect(asset.owner.toString()).to.equal(minterA.publicKey.toBase58());
       expect(asset.freezeDelegate ?? asset.transferDelegate ?? asset.burnDelegate ?? asset.permanentTransferDelegate).to.equal(undefined);

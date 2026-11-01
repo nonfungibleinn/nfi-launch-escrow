@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use crate::mplcore::{candy_machine_view, lock_asset_metadata, reveal_leaf, reveal_root_of, update_asset, MplCore};
+use crate::mplcore::{lock_asset_metadata, reveal_leaf, reveal_root_of, update_asset, MplCore};
 use crate::errors::EscrowError;
 use crate::events::Revealed;
 use crate::state::*;
@@ -21,7 +21,7 @@ pub struct Reveal<'info> {
     /// CHECK: the escrow's collection (has_one); written by Core when the asset gains its lock.
     #[account(mut)]
     pub collection: UncheckedAccount<'info>,
-    /// CHECK: the escrow's machine (has_one), read for its redeemed count.
+    /// CHECK: the escrow's machine (has_one); kept in the instruction's accounts, no longer read (0.5.2).
     pub candy_machine: UncheckedAccount<'info>,
     #[account(mut)]
     pub payer: Signer<'info>,
@@ -37,8 +37,9 @@ pub fn reveal(ctx: Context<Reveal>, name: String, uri: String, proof: Vec<[u8; 3
     let r = &ctx.accounts.receipt;
     require!(!r.revealed && !r.refunded, EscrowError::AlreadyRevealed);
     require!(name.len() <= 32 && uri.len() <= 200 && proof.len() <= MAX_PROOF, EscrowError::BadConfig);
-    let redeemed = candy_machine_view(&ctx.accounts.candy_machine.try_borrow_data()?)?.items_redeemed;
-    let minting_over = e.status != EscrowStatus::Open || now >= e.window_end || redeemed >= e.items_available;
+    // Sold out is judged by the escrow's own receipts: pay_and_mint is the only mint and checks them against the machine's
+    // count on every mint, so no layout read of the machine is needed here (0.5.2).
+    let minting_over = e.status != EscrowStatus::Open || now >= e.window_end || e.receipts >= e.items_available;
     require!(minting_over, EscrowError::MintingNotOver);
     require!(reveal_root_of(reveal_leaf(r.mint_index, &name, &uri), &proof) == e.reveal_root, EscrowError::BadRevealProof);
     let seeds = e.signer_seeds();

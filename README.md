@@ -9,7 +9,10 @@ Program id: `3qRS59TJmgaNUzKjKsUe3XGggodSXA9GHU9Q5u2ffE1n`. The deploy keypair i
 
 ## Status
 
-Revision 0.5.1 (7 October 2026; 0.5 on 6 October): the round-4 review fixes (an independent multi-reviewer audit of program and service).
+Revision 0.5.2 (1 November 2026; 0.5.1 on 7 October, 0.5 on 6 October): the round-4 review fixes (an independent multi-reviewer
+audit of program and service), then one hardening: the mint number a receipt records is cross-checked against the escrow's own
+receipt count on every mint, and the reveal judges "sold out" by that count, so a changed Candy Machine layout stops minting
+instead of writing a wrong mint number.
 The suite (26 cases, real MPL Core, Core Candy Machine and Candy Guard fixtures from mainnet) passes on a local
 validator. Devnet only. Not independently audited.
 
@@ -35,7 +38,8 @@ instruction:
    the wallet is under the phase's per-wallet limit (a counter PDA per wallet and phase);
 2. moves the phase's price plus NFI's fee from the minter into the vault;
 3. asks the machine to mint a fresh asset (the machine refuses an existing account) with no plugins, owned by the minter;
-4. writes the receipt naming that asset and its mint number.
+4. writes the receipt naming that asset and its mint number: the machine's redeemed count, which must equal the receipts
+   written so far (the escrow has been the machine's only minter since init), or the mint is refused.
 
 NFI's per-launch permit key co-signs every mint for the policies that live off chain (allowlists, per-account limits).
 A leak of that key lets a wallet skip a policy; it never lets anyone mint without paying. The hot NFI key can rotate it.
@@ -66,7 +70,7 @@ the machine's authority back once the escrow is final:
 A hidden-settings machine must come with a reveal commitment at init: the Merkle root of every item's final
 (mint number, name, URI), leaves `sha256(0x00 | u64 LE mint number | u32 len | name | u32 len | uri)`, nodes
 `sha256(0x01 | smaller | larger)`. A machine with final config lines must not have one. `reveal` is permissionless,
-waits until minting is over (sold out, window ended, or not open), accepts only the committed leaf for the asset's mint
+waits until minting is over (sold out by the escrow's receipt count, window ended, or not open), accepts only the committed leaf for the asset's mint
 number (recorded on its receipt), runs once per asset, and locks the asset (ImmutableMetadata, no authority): nobody,
 the creator included, can change a revealed asset's name or URI again. The lock sits on each asset, not the collection,
 because a collection-level ImmutableMetadata also refuses the handover of the update authority.

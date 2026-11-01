@@ -96,4 +96,6 @@ pub enum EscrowError {
     RevealPending,
     #[msg("Mint counters are still open; close them first (their rent goes back to the minters)")]
     CountersOpen,
+    #[msg("The machine's redeemed count does not match the escrow's receipts")]
+    MintIndexMismatch,
 }

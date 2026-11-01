@@ -81,6 +81,11 @@ pub fn pay_and_mint(ctx: Context<PayAndMint>, group: u8) -> Result<()> {
     }
     let mint_index = candy_machine_view(&ctx.accounts.candy_machine.try_borrow_data()?)?.items_redeemed;
     let e = &mut ctx.accounts.escrow;
+    // The escrow has been the machine's only minter since init (items_redeemed was 0 then), so the machine's count must equal
+    // the receipts written so far. Checked against the escrow's own counter so a misread of the machine's layout (an upgrade
+    // of the Candy Machine program) stops minting instead of writing a wrong mint number into a receipt that a reveal would
+    // later lock in for good.
+    require!(mint_index == e.receipts, EscrowError::MintIndexMismatch);
     if new_counter { e.counters_open = e.counters_open.checked_add(1).ok_or(EscrowError::Overflow)?; }
     e.price_in = e.price_in.checked_add(price).ok_or(EscrowError::Overflow)?;
     e.fee_in = e.fee_in.checked_add(fee).ok_or(EscrowError::Overflow)?;
