@@ -140,8 +140,8 @@ solana-verify verify-from-repo -u devnet --program-id 3qRS59TJmgaNUzKjKsUe3XGggo
   --commit-hash <commit> https://github.com/nonfungibleinn/nfi-launch-escrow
 ```
 
-On devnet the program at commit `e41551d` (revision 0.5.2) verifies (executable hash `4db9da8b…`), with the verification record
-on chain; before it, `c6b7113` (0.5.1, hash `602fe0a6…`).
+On devnet the program at commit `5380bad` (revision 0.5.3) is deployed (executable hash `a3db98c6…`); before it,
+`e41551d` (0.5.2, hash `4db9da8b…`) and `c6b7113` (0.5.1, hash `602fe0a6…`).
 
 **Upgrades and account layouts.** `LaunchEscrow`, `MintReceipt` and `MintCounter` carry no version field. An upgrade
 must not change an account layout while any escrow, receipt or counter of the old layout is open: the new program could
