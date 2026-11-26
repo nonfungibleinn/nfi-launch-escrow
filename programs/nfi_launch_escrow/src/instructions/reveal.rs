@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use crate::mplcore::{asset_gone, lock_asset_metadata, reveal_depth, reveal_leaf, reveal_root_of, update_asset, MplCore};
+use crate::mplcore::{asset_gone, asset_owner_and_collection, lock_asset_metadata, reveal_depth, reveal_leaf, reveal_root_of, update_asset, MplCore};
 use crate::errors::EscrowError;
 use crate::events::Revealed;
 use crate::state::*;
@@ -10,7 +10,9 @@ use crate::state::*;
 /// the rare ones while they can still be minted. The revealed asset is then locked (ImmutableMetadata, no authority): nobody,
 /// the creator included, can change its name or URI again, before or after the collection goes back (owner decision).
 /// A burned asset has nothing to reveal: it is counted as revealed with no proof and no write, so one burn cannot hold
-/// the collection, the receipts and the escrow back for the whole reveal grace (0.5.3).
+/// the collection, the receipts and the escrow back for the whole reveal grace (0.5.3). The same goes for anything else
+/// at a burned asset's address (a new asset or collection made there by whoever kept its keypair): reveal runs only
+/// while the escrow holds the collection, and until then no asset of the launch can be outside it.
 #[derive(Accounts)]
 pub struct Reveal<'info> {
     #[account(mut, seeds = [ESCROW_SEED, escrow.candy_machine.as_ref()], bump = escrow.bump, has_one = collection @ EscrowError::WrongCollection, has_one = candy_machine @ EscrowError::BadMachine)]
@@ -42,7 +44,11 @@ pub fn reveal(ctx: Context<Reveal>, name: String, uri: String, proof: Vec<[u8; 3
     // count on every mint, so no layout read of the machine is needed here (0.5.2).
     let minting_over = e.status != EscrowStatus::Open || now >= e.window_end || e.receipts >= e.items_available;
     require!(minting_over, EscrowError::MintingNotOver);
-    if !asset_gone(&ctx.accounts.asset.to_account_info())? {
+    let live = {
+        let a = ctx.accounts.asset.to_account_info();
+        !asset_gone(&a)? && matches!(asset_owner_and_collection(&a.try_borrow_data()?), Ok((_, Some(c))) if c == e.collection)
+    };
+    if live {
         require!(name.len() <= 32 && uri.len() <= 200, EscrowError::BadConfig);
         require!(proof.len() == reveal_depth(e.items_available) && r.mint_index < e.items_available, EscrowError::BadRevealProof);
         require!(reveal_root_of(reveal_leaf(r.mint_index, &name, &uri), r.mint_index, &proof) == e.reveal_root, EscrowError::BadRevealProof);

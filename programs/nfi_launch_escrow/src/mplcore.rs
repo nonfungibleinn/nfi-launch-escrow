@@ -50,8 +50,8 @@ pub fn asset_owner_and_collection(data: &[u8]) -> Result<(Pubkey, Option<Pubkey>
     Ok((owner, coll))
 }
 
-/// The asset no longer exists: the one-byte shell Core leaves after a burn, or that shell after Core's permissionless
-/// Collect handed it to the System Program (or drained it away entirely). Round 4, L-005: refunds must survive Collect.
+/// The asset no longer exists: the one-byte shell Core leaves after a burn, or an address Core no longer owns (that
+/// shell after Core's permissionless Collect, whatever was put there since). Round 4, L-005: refunds must survive Collect.
 pub fn asset_gone(a: &AccountInfo) -> Result<bool> {
     let data = a.try_borrow_data()?;
     // Core never hands a live asset to another program, so an address Core no longer owns is a burned asset whatever

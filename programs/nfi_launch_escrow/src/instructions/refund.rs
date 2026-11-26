@@ -44,7 +44,6 @@ pub fn refund(ctx: Context<Refund>) -> Result<()> {
     // A live AssetV1 is burned here; Core's one-byte shell after a burn, or an address Core no longer owns (what its
     // permissionless Collect leaves: round 4, L-005), is a gone asset and pays the original minter.
     let (exists, owner_now) = if asset_gone(&asset.to_account_info())? { (false, Pubkey::default()) } else {
-        require!(*asset.owner == MPL_CORE_ID, EscrowError::AssetUnreadable);
         let data = asset.try_borrow_data()?;
         let (owner, coll) = asset_owner_and_collection(&data)?;
         // While the escrow holds the collection nothing can leave it, so a live asset here that is not in it was
