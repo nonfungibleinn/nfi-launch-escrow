@@ -8,9 +8,9 @@ use crate::state::*;
 /// After a cancel. While the asset exists, its current owner signs and the asset is burned in this same instruction;
 /// the payment goes to that owner (whoever gives the NFT back is made whole, so a secondary buyer is never trapped),
 /// and the receipt's rent goes back to the original minter. Once the asset is the one-byte shell Core leaves after a
-/// burn, anyone may crank the refund, which pays the original minter. Anything else at the asset's address is refused.
-/// The receipt already proves the asset was minted by this launch (pay's introspection), so no collection membership is
-/// required here: a holder whose asset was somehow moved is still made whole (review 2, finding 1c).
+/// burn (or anything Core no longer owns), anyone may crank the refund, which pays the original minter. While the
+/// escrow holds the collection a live asset must be in it; once the collection has gone back to the creator a holder
+/// whose asset was moved out of it is still made whole (review 2, finding 1c).
 #[derive(Accounts)]
 pub struct Refund<'info> {
     #[account(mut, seeds = [ESCROW_SEED, escrow.candy_machine.as_ref()], bump = escrow.bump)]
@@ -41,12 +41,15 @@ pub fn refund(ctx: Context<Refund>) -> Result<()> {
     let r = &ctx.accounts.receipt;
     require!(!r.refunded, EscrowError::AlreadyRefunded);
     let asset = &ctx.accounts.asset;
-    // Three shapes are accepted: a live AssetV1, Core's one-byte shell after a burn, or what Core's permissionless Collect
-    // leaves of that shell (System-owned, zeroed or gone: round 4, L-005). Anything else at the address is refused.
+    // A live AssetV1 is burned here; Core's one-byte shell after a burn, or an address Core no longer owns (what its
+    // permissionless Collect leaves: round 4, L-005), is a gone asset and pays the original minter.
     let (exists, owner_now) = if asset_gone(&asset.to_account_info())? { (false, Pubkey::default()) } else {
         require!(*asset.owner == MPL_CORE_ID, EscrowError::AssetUnreadable);
         let data = asset.try_borrow_data()?;
         let (owner, coll) = asset_owner_and_collection(&data)?;
+        // While the escrow holds the collection nothing can leave it, so a live asset here that is not in it was
+        // created at a burned asset's address by whoever kept its keypair: it earns no refund (0.5.3).
+        require!(e.collection_returned || coll == Some(e.collection), EscrowError::WrongCollection);
         let want = coll.unwrap_or(MPL_CORE_ID);
         require!(ctx.accounts.collection.key() == want, EscrowError::WrongCollection);
         (true, owner)

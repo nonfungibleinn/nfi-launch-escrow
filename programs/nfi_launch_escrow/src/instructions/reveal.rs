@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use crate::mplcore::{lock_asset_metadata, reveal_leaf, reveal_root_of, update_asset, MplCore};
+use crate::mplcore::{asset_gone, lock_asset_metadata, reveal_depth, reveal_leaf, reveal_root_of, update_asset, MplCore};
 use crate::errors::EscrowError;
 use crate::events::Revealed;
 use crate::state::*;
@@ -9,6 +9,8 @@ use crate::state::*;
 /// machine sold out, the window ended, or the escrow is no longer open: L-025), so nobody can learn which mint numbers are
 /// the rare ones while they can still be minted. The revealed asset is then locked (ImmutableMetadata, no authority): nobody,
 /// the creator included, can change its name or URI again, before or after the collection goes back (owner decision).
+/// A burned asset has nothing to reveal: it is counted as revealed with no proof and no write, so one burn cannot hold
+/// the collection, the receipts and the escrow back for the whole reveal grace (0.5.3).
 #[derive(Accounts)]
 pub struct Reveal<'info> {
     #[account(mut, seeds = [ESCROW_SEED, escrow.candy_machine.as_ref()], bump = escrow.bump, has_one = collection @ EscrowError::WrongCollection, has_one = candy_machine @ EscrowError::BadMachine)]
@@ -36,16 +38,19 @@ pub fn reveal(ctx: Context<Reveal>, name: String, uri: String, proof: Vec<[u8; 3
     require!(!e.collection_returned, EscrowError::CollectionReturned);
     let r = &ctx.accounts.receipt;
     require!(!r.revealed && !r.refunded, EscrowError::AlreadyRevealed);
-    require!(name.len() <= 32 && uri.len() <= 200 && proof.len() <= MAX_PROOF, EscrowError::BadConfig);
     // Sold out is judged by the escrow's own receipts: pay_and_mint is the only mint and checks them against the machine's
     // count on every mint, so no layout read of the machine is needed here (0.5.2).
     let minting_over = e.status != EscrowStatus::Open || now >= e.window_end || e.receipts >= e.items_available;
     require!(minting_over, EscrowError::MintingNotOver);
-    require!(reveal_root_of(reveal_leaf(r.mint_index, &name, &uri), &proof) == e.reveal_root, EscrowError::BadRevealProof);
-    let seeds = e.signer_seeds();
-    let seed_refs: Vec<&[u8]> = seeds.iter().map(|s| s.as_slice()).collect();
-    update_asset(&ctx.accounts.asset.to_account_info(), &ctx.accounts.collection.to_account_info(), &ctx.accounts.payer.to_account_info(), &e.to_account_info(), &ctx.accounts.system_program.to_account_info(), &ctx.accounts.mpl_core_program.to_account_info(), &[&seed_refs], Some(name), Some(uri))?;
-    lock_asset_metadata(&ctx.accounts.asset.to_account_info(), &ctx.accounts.collection.to_account_info(), &ctx.accounts.payer.to_account_info(), &e.to_account_info(), &ctx.accounts.system_program.to_account_info(), &ctx.accounts.mpl_core_program.to_account_info(), &[&seed_refs])?;
+    if !asset_gone(&ctx.accounts.asset.to_account_info())? {
+        require!(name.len() <= 32 && uri.len() <= 200, EscrowError::BadConfig);
+        require!(proof.len() == reveal_depth(e.items_available) && r.mint_index < e.items_available, EscrowError::BadRevealProof);
+        require!(reveal_root_of(reveal_leaf(r.mint_index, &name, &uri), r.mint_index, &proof) == e.reveal_root, EscrowError::BadRevealProof);
+        let seeds = e.signer_seeds();
+        let seed_refs: Vec<&[u8]> = seeds.iter().map(|s| s.as_slice()).collect();
+        update_asset(&ctx.accounts.asset.to_account_info(), &ctx.accounts.collection.to_account_info(), &ctx.accounts.payer.to_account_info(), &e.to_account_info(), &ctx.accounts.system_program.to_account_info(), &ctx.accounts.mpl_core_program.to_account_info(), &[&seed_refs], Some(name), Some(uri))?;
+        lock_asset_metadata(&ctx.accounts.asset.to_account_info(), &ctx.accounts.collection.to_account_info(), &ctx.accounts.payer.to_account_info(), &e.to_account_info(), &ctx.accounts.system_program.to_account_info(), &ctx.accounts.mpl_core_program.to_account_info(), &[&seed_refs])?;
+    }
     let asset = r.asset;
     let mint_index = r.mint_index;
     ctx.accounts.receipt.revealed = true;

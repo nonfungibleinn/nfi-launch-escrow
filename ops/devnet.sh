@@ -5,7 +5,7 @@
 #   bash ops/devnet.sh init-config <nfi> <canceller> <treasury> # the config (seed "config2" since round 4)
 #   bash ops/devnet.sh show                                     # program + config as deployed
 #   bash ops/devnet.sh hash                                     # sha256 of the production build vs the one on chain
-# Only target/prod (written by 'wsl-build.sh build-release', hash recorded) is ever deployed (round 4, L-041).
+# Only target/prod (written by 'wsl-build.sh build-verifiable', hash recorded) is ever deployed (round 4, L-041).
 set -euo pipefail
 DST="$HOME/nfi-launch-escrow"
 RPC="https://api.devnet.solana.com"
@@ -14,7 +14,7 @@ PROGRAM="3qRS59TJmgaNUzKjKsUe3XGggodSXA9GHU9Q5u2ffE1n"
 SO="target/prod/nfi_launch_escrow.so"
 cd "$DST"
 prod_check() {
-  [ -f "$SO" ] || { echo "no $SO: run 'wsl-build.sh build-release' first"; exit 1; }
+  [ -f "$SO" ] || { echo "no $SO: run 'wsl-build.sh build-verifiable' first"; exit 1; }
   (cd target/prod && sha256sum -c nfi_launch_escrow.so.sha256) || { echo "target/prod binary does not match its recorded hash"; exit 1; }
   grep -q '"value": "3600"' target/prod/nfi_launch_escrow.json || { echo "target/prod IDL says MIN_WINDOW_SECS != 3600 (never deploy a test build)"; exit 1; }
 }

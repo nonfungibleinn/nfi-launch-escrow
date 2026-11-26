@@ -54,10 +54,11 @@ pub fn asset_owner_and_collection(data: &[u8]) -> Result<(Pubkey, Option<Pubkey>
 /// Collect handed it to the System Program (or drained it away entirely). Round 4, L-005: refunds must survive Collect.
 pub fn asset_gone(a: &AccountInfo) -> Result<bool> {
     let data = a.try_borrow_data()?;
-    if *a.owner == MPL_CORE_ID { return Ok(data.len() == 1 && data[0] == KEY_UNINITIALIZED); }
-    // A System-owned account can only hold zeros (the System Program never writes data), so any length is a burned
-    // asset: someone holding the asset's old keypair cannot block the crank by re-creating the account with space.
-    Ok(*a.owner == anchor_lang::system_program::ID && data.iter().all(|b| *b == 0))
+    // Core never hands a live asset to another program, so an address Core no longer owns is a burned asset whatever
+    // sits there now: someone holding the asset's old keypair cannot block a refund by re-creating the account under
+    // another owner (0.5.3).
+    if *a.owner != MPL_CORE_ID { return Ok(true); }
+    Ok(data.len() == 1 && data[0] == KEY_UNINITIALIZED)
 }
 
 /// A collection's update authority: key(1) | update_authority(32).
@@ -274,12 +275,19 @@ pub fn reveal_leaf(mint_index: u64, name: &str, uri: &str) -> [u8; 32] {
     hashv(&[&[0u8], &mint_index.to_le_bytes(), &(name.len() as u32).to_le_bytes(), name.as_bytes(), &(uri.len() as u32).to_le_bytes(), uri.as_bytes()]).to_bytes()
 }
 
-/// Walks a proof up to the root; each node is sha256(0x01 | smaller | larger), so no position bits are needed.
-pub fn reveal_root_of(leaf: [u8; 32], proof: &[[u8; 32]]) -> [u8; 32] {
+/// The reveal tree's depth for a supply: the smallest d with 2^d >= items. The tree is full (padded to 2^d leaves).
+pub fn reveal_depth(items: u64) -> usize {
+    (64 - items.saturating_sub(1).leading_zeros()) as usize
+}
+
+/// Walks a proof up to the root. The tree is positional: at each level the mint number's low bit says whether the node
+/// is the left or the right child (sha256(0x01 | left | right)), so exactly one leaf can stand for a mint number (0.5.3).
+pub fn reveal_root_of(leaf: [u8; 32], mint_index: u64, proof: &[[u8; 32]]) -> [u8; 32] {
     let mut h = leaf;
+    let mut i = mint_index;
     for p in proof {
-        let (a, b) = if h <= *p { (h, *p) } else { (*p, h) };
-        h = hashv(&[&[1u8], &a, &b]).to_bytes();
+        h = if i & 1 == 0 { hashv(&[&[1u8], &h, p]).to_bytes() } else { hashv(&[&[1u8], p, &h]).to_bytes() };
+        i >>= 1;
     }
     h
 }

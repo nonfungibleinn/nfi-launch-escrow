@@ -30,23 +30,19 @@ const u32 = (n: number) => { const b = Buffer.alloc(4); b.writeUInt32LE(n); retu
 const u64 = (n: number) => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(n)); return b; };
 const sha = (...parts: Buffer[]) => createHash("sha256").update(Buffer.concat(parts)).digest();
 export const revealLeaf = (i: number, name: string, uri: string) => sha(Buffer.from([0]), u64(i), u32(Buffer.byteLength(name)), Buffer.from(name), u32(Buffer.byteLength(uri)), Buffer.from(uri));
-const node = (a: Buffer, b: Buffer) => (Buffer.compare(a, b) <= 0 ? sha(Buffer.from([1]), a, b) : sha(Buffer.from([1]), b, a));
-/** Root and per-leaf proofs; an odd node is carried up unchanged (so its proof has no entry for that level). */
+const node = (left: Buffer, right: Buffer) => sha(Buffer.from([1]), left, right);
+/** Root and per-leaf proofs of the positional tree: padded with zero leaves to 2^depth, a node is sha256(1 | left | right). */
 export const revealTree = (leaves: Buffer[]) => {
+  let depth = 0;
+  while (2 ** depth < leaves.length) depth++;
+  let level: Buffer[] = [...leaves, ...Array.from({ length: 2 ** depth - leaves.length }, () => Buffer.alloc(32))];
   const proofs: Buffer[][] = leaves.map(() => []);
-  let level = leaves.map((h, i) => ({ h, members: [i] }));
-  while (level.length > 1) {
-    const next: typeof level = [];
-    for (let i = 0; i < level.length; i += 2) {
-      const a = level[i]!, b = level[i + 1];
-      if (!b) { next.push(a); continue; }
-      a.members.forEach((m) => proofs[m]!.push(b.h));
-      b.members.forEach((m) => proofs[m]!.push(a.h));
-      next.push({ h: node(a.h, b.h), members: [...a.members, ...b.members] });
-    }
-    level = next;
+  for (let d = 0; d < depth; d++) {
+    const cur = level;
+    proofs.forEach((p, i) => p.push(cur[(i >> d) ^ 1]!));
+    level = Array.from({ length: cur.length / 2 }, (_, i) => node(cur[2 * i]!, cur[2 * i + 1]!));
   }
-  return { root: level[0]!.h, proofs };
+  return { root: level[0]!, proofs };
 };
 
 describe("nfi_launch_escrow", () => {
@@ -143,9 +139,6 @@ describe("nfi_launch_escrow", () => {
   const releaseFee = (L: L, signer = stranger, to = treasury.publicKey) => program.methods.releaseFee().accounts({ escrow: L.escrow, vault: L.vault, treasury: to, signer: signer.publicKey } as any).signers([signer]).rpc();
   const cancel = (L: L, signer: Keypair) => program.methods.cancel().accounts({ config: configPda, escrow: L.escrow, signer: signer.publicKey } as any).signers([signer]).rpc();
   const setPaused = (L: L, paused: boolean, signer = nfi) => program.methods.setPaused(paused).accounts({ config: configPda, escrow: L.escrow, nfiAuthority: signer.publicKey } as any).signers([signer]).rpc();
-  const setPermit = (L: L, p: PublicKey, signer = nfi) => program.methods.setPermit(p).accounts({ config: configPda, escrow: L.escrow, nfiAuthority: signer.publicKey } as any).signers([signer]).rpc();
-  const setGroup = (L: L, g: number, start: number, end: number, perWallet: number, allocation: number, signers: Keypair[] = [nfi, creator]) =>
-    program.methods.setGroup(g, new BN(start), new BN(end), perWallet, allocation).accounts({ config: configPda, escrow: L.escrow, nfiAuthority: signers[0]!.publicKey, creator: signers[1]!.publicKey } as any).signers(signers).rpc();
   const returnCollection = (L: L, signer = stranger) =>
     program.methods.returnCollection().accounts({ escrow: L.escrow, collection: L.m.collection, candyMachine: L.m.cm, creator: creator.publicKey, payer: signer.publicKey, candyMachineProgram: CANDY_MACHINE, mplCoreProgram: CORE, systemProgram: SystemProgram.programId } as any).signers([signer]).rpc();
   const reveal = (L: L, asset: PublicKey, name: string, uri: string, proof: Buffer[], signer = stranger) =>
@@ -295,14 +288,11 @@ describe("nfi_launch_escrow", () => {
       const cm = await fetchCandyMachine(umiCreator, pk(L.m.cm));
       expect(Number(cm.itemsRedeemed)).to.equal(e.receipts.toNumber()); // every item minted has a receipt
     });
-    it("a wrong or missing permit signature is refused; a rotated permit takes over at once", async () => {
+    it("a wrong permit signature is refused; nothing can change a launch's permit or phases after init (0.5.3)", async () => {
       await fails(mint(L, minterB, 1, { permitSigner: stranger }), "NotPermit");
-      const p2 = Keypair.generate();
-      await fails(setPermit(L, p2.publicKey, stranger), "NotNfi");
-      await setPermit(L, p2.publicKey);
-      await fails(mint(L, minterB, 1), "NotPermit");
-      await mint(L, minterB, 1, { permitSigner: p2 });
-      await setPermit(L, permit.publicKey);
+      await mint(L, minterB, 1);
+      expect((program.methods as any).setPermit, "set_permit is gone").to.equal(undefined);
+      expect((program.methods as any).setGroup, "set_group is gone").to.equal(undefined);
     });
     it("a pre-existing asset account cannot be minted into", async () => {
       const a = Keypair.generate();
@@ -316,18 +306,6 @@ describe("nfi_launch_escrow", () => {
       await fails(mint(L, minterB, 1), "PhaseSoldOut");
       await fails(mint(L, minterA, 2), "PhaseNotStarted");
       await fails(mint(L, minterA, 5), "BadGroup");
-    });
-    it("a phase change needs the creator and NFI, only before the phase starts, and never touches the price", async () => {
-      await fails(setGroup(L, 1, now() + 100, 0, 0, 0), "PhaseStarted");
-      await fails(setGroup(L, 2, now() + 100, 0, 0, 0, [stranger, creator]), "NotNfi");
-      await fails(setGroup(L, 2, now() + 100, 0, 0, 0, [nfi, stranger]), "NotCreator");
-      await fails(setGroup(L, 2, now() + 100, now() + 7200, 0, 0), "BadPhase");
-      await setGroup(L, 2, now() + 2, 0, 5, 0);
-      await sleep(4000);
-      await mint(L, minterB, 2);
-      const g = (await program.account.launchEscrow.fetch(L.escrow)).groups[2]!;
-      expect(g.price.toString()).to.equal(SOL(2).toString());
-      expect(g.perWallet).to.equal(5);
     });
     it("paused: minting stops; only the hot key pauses", async () => {
       await fails(setPaused(L, true, stranger), "NotNfi");
@@ -450,16 +428,44 @@ describe("nfi_launch_escrow", () => {
       await release(L);
       await fails(closeReceipt(L, assets[1]!, minterA.publicKey), "RevealPending");
       await fails(returnCollection(L), "NotFinal");
-      for (const a of assets.slice(1)) {
-        const i = (await program.account.mintReceipt.fetch(receiptPda(L.escrow, a))).mintIndex.toNumber();
-        await reveal(L, a, finals[i]!.name, finals[i]!.uri, tree.proofs[i]!);
-      }
+      const i1 = (await program.account.mintReceipt.fetch(receiptPda(L.escrow, assets[1]!))).mintIndex.toNumber();
+      // The proof is exactly the tree's depth: a shorter or longer one is refused (0.5.3).
+      await fails(reveal(L, assets[1]!, finals[i1]!.name, finals[i1]!.uri, tree.proofs[i1]!.slice(0, -1)), "BadRevealProof");
+      await fails(reveal(L, assets[1]!, finals[i1]!.name, finals[i1]!.uri, [...tree.proofs[i1]!, Buffer.alloc(32)]), "BadRevealProof");
+      await reveal(L, assets[1]!, finals[i1]!.name, finals[i1]!.uri, tree.proofs[i1]!);
+      // A burned asset has nothing to reveal: it is counted, with no proof, so it cannot hold the collection back (0.5.3).
+      await coreBurn(umiB, { asset: await fetchAsset(umiB, pk(assets[2]!)), collection: await fetchCollection(umiB, pk(L.m.collection)) }).sendAndConfirm(umiB);
+      await fails(returnCollection(L), "NotFinal");
+      await reveal(L, assets[2]!, "", "", []);
+      await fails(reveal(L, assets[2]!, "", "", []), "AlreadyRevealed");
+      assets.pop();
       await returnCollection(L);
       expect(await collectionAuthority(L.m)).to.equal(creator.publicKey.toBase58());
       for (const a of assets) expect((await fetchAsset(umiA, pk(a))).immutableMetadata, "each revealed asset is locked").to.not.equal(undefined);
       // The creator holds the collection again, and still cannot touch a revealed asset's metadata.
       await fails(coreUpdate(umiCreator, { asset: await fetchAsset(umiCreator, pk(assets[0]!)), collection: await fetchCollection(umiCreator, pk(L.m.collection)), uri: "https://x.invalid/rug.json" }).sendAndConfirm(umiCreator), "");
       expect((await fetchAsset(umiA, pk(assets[0]!))).uri).to.not.equal("https://x.invalid/rug.json");
+    });
+  });
+
+  describe("a burned asset's address (0.5.3)", () => {
+    it("handed to another program by whoever kept its keypair, it cannot block the refund: the minter is paid", async () => {
+      const L = await initEscrow(await buildMachine({ items: 2 }), now() + 3600);
+      const k = Keypair.generate();
+      await mint(L, minterB, 1, { asset: k });
+      await cancel(L, creator);
+      await coreBurn(umiB, { asset: await fetchAsset(umiB, pk(k.publicKey)), collection: await fetchCollection(umiB, pk(L.m.collection)) }).sendAndConfirm(umiB);
+      await collect(umiCreator, {}).addRemainingAccounts({ pubkey: pk(k.publicKey), isSigner: false, isWritable: true }).sendAndConfirm(umiCreator);
+      const info = await conn.getAccountInfo(k.publicKey, "confirmed");
+      const lamports = await conn.getMinimumBalanceForRentExemption(10);
+      const tx = new Transaction();
+      if (info === null) tx.add(SystemProgram.createAccount({ fromPubkey: minterA.publicKey, newAccountPubkey: k.publicKey, lamports, space: 10, programId: CANDY_MACHINE }));
+      else tx.add(SystemProgram.transfer({ fromPubkey: minterA.publicKey, toPubkey: k.publicKey, lamports }), SystemProgram.assign({ accountPubkey: k.publicKey, programId: CANDY_MACHINE }));
+      await provider.sendAndConfirm(tx, [minterA, k]);
+      expect((await conn.getAccountInfo(k.publicKey, "confirmed"))!.owner.equals(CANDY_MACHINE)).to.equal(true);
+      const b0 = await bal(minterB.publicKey);
+      await refund(L, k.publicKey, minterB.publicKey, stranger);
+      expect((await bal(minterB.publicKey)) - b0).to.be.greaterThan(SOL(1).toNumber());
     });
   });
 

@@ -6,7 +6,7 @@
 #   bash ops/wsl-build.sh pin      # a Cargo.lock the SBF toolchain can parse
 #   bash ops/wsl-build.sh build    # anchor build --features test
 #   bash ops/wsl-build.sh test     # anchor test --features test (local validator): the suite, full log in ~/nfi-launch-escrow-test.log
-#   bash ops/wsl-build.sh build-verifiable # production build in the solana-verify docker image -> target/prod (needs docker)
+#   bash ops/wsl-build.sh build-verifiable # the production build, in the solana-verify docker image -> target/prod (needs docker); run `build` again before `test`
 #   bash ops/wsl-build.sh property # the value-conservation property test, alone on private ports (~50 min; build first)
 #   bash ops/wsl-build.sh lock     # Cargo.lock back to the Windows checkout
 set -uo pipefail
@@ -40,27 +40,27 @@ case "$cmd" in
   build)
     cd "$DST" && anchor build -- --features test 2>&1 | grep -E -e '^error' -e '^warning' -e 'failed to parse' -e 'Finished' -e 'Compiling nfi_launch' -e '\-\-> ' | head -40
     ls -la target/deploy/*.so target/idl/*.json 2>/dev/null;;
-  build-release)
-    # The PRODUCTION program: no test feature (a one-hour minimum window). Copied to the Windows checkout as target/deploy/nfi_launch_escrow.prod.so.
-    # The deploy scripts take ONLY target/prod/ (round 4, L-041): a later test build overwrites target/deploy and target/idl,
-    # never target/prod, and the deploy refuses a binary whose sha256 is not the one recorded here with a 3600 s IDL.
-    cd "$DST" && anchor build 2>&1 | grep -E -e "^error" -e "Finished" | head -5
-    grep -q '"value": "3600"' target/idl/nfi_launch_escrow.json || { echo "the release IDL does not say MIN_WINDOW_SECS = 3600"; exit 1; }
-    mkdir -p target/prod && cp target/deploy/nfi_launch_escrow.so target/prod/ && cp target/idl/nfi_launch_escrow.json target/prod/
-    (cd target/prod && sha256sum nfi_launch_escrow.so > nfi_launch_escrow.so.sha256 && cat nfi_launch_escrow.so.sha256)
-    cp target/prod/nfi_launch_escrow.so "$SRC/target/deploy/nfi_launch_escrow.prod.so" && ls -la "$SRC/target/deploy/nfi_launch_escrow.prod.so" | awk '{print $5" bytes"}';;
   build-verifiable)
     # The PRODUCTION program built reproducibly in the Solana Foundation's docker image (solana-verify), so anyone can
-    # rebuild the deployed bytes from this repository at a commit. Writes target/prod like build-release; the deploy
-    # scripts then ship exactly these bytes. The IDL comes from a plain release build (3600 s minimum window).
-    cd "$DST" && anchor build 2>&1 | grep -E -e "^error" -e "Finished" | head -3
+    # rebuild the deployed bytes from this repository at a commit. The ONLY way to target/prod: the deploy scripts ship
+    # exactly these bytes. Every step must succeed; a failed build leaves no target/prod behind (0.5.3).
+    cd "$DST" || exit 1
+    rm -rf target/prod
+    rm -f target/deploy/nfi_launch_escrow.so target/idl/nfi_launch_escrow.json
+    # The IDL comes from a plain release build (no test feature: a one-hour minimum window).
+    anchor build > /tmp/nfi-launch-build.log 2>&1 || { tail -20 /tmp/nfi-launch-build.log; echo "anchor build failed"; exit 1; }
     grep -q '"value": "3600"' target/idl/nfi_launch_escrow.json || { echo "the release IDL does not say MIN_WINDOW_SECS = 3600"; exit 1; }
+    # The binary must be the docker build's, never the plain build above.
+    rm -f target/deploy/nfi_launch_escrow.so
     # The image of the same Solana toolchain the tests build with (4.2.2); the default image for solana-program 2.3 has a
     # Cargo too old for some dependencies. A verifier passes the same --base-image to solana-verify verify-from-repo.
-    solana-verify build --base-image solanafoundation/solana-verifiable-build:4.2.2 --library-name nfi_launch_escrow 2>&1 | tail -3
-    mkdir -p target/prod && cp target/deploy/nfi_launch_escrow.so target/prod/ && cp target/idl/nfi_launch_escrow.json target/prod/
-    (cd target/prod && sha256sum nfi_launch_escrow.so > nfi_launch_escrow.so.sha256)
-    echo "verifiable hash: $(solana-verify get-executable-hash target/prod/nfi_launch_escrow.so)"
+    solana-verify build --base-image solanafoundation/solana-verifiable-build:4.2.2 --library-name nfi_launch_escrow > /tmp/nfi-launch-verify.log 2>&1 || { tail -20 /tmp/nfi-launch-verify.log; echo "solana-verify build failed"; exit 1; }
+    [ -s target/deploy/nfi_launch_escrow.so ] || { echo "solana-verify wrote no binary"; exit 1; }
+    hash=$(solana-verify get-executable-hash target/deploy/nfi_launch_escrow.so) || { echo "no executable hash"; exit 1; }
+    [ -n "$hash" ] || { echo "no executable hash"; exit 1; }
+    mkdir -p target/prod && cp target/deploy/nfi_launch_escrow.so target/prod/ && cp target/idl/nfi_launch_escrow.json target/prod/ || exit 1
+    (cd target/prod && sha256sum nfi_launch_escrow.so > nfi_launch_escrow.so.sha256) || exit 1
+    echo "verifiable hash: $hash"
     cp target/prod/nfi_launch_escrow.so "$SRC/target/deploy/nfi_launch_escrow.prod.so";;
   test)
     cd "$DST"

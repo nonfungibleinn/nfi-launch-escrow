@@ -9,11 +9,14 @@ Program id: `3qRS59TJmgaNUzKjKsUe3XGggodSXA9GHU9Q5u2ffE1n`. The deploy keypair i
 
 ## Status
 
-Revision 0.5.2 (1 November 2026; 0.5.1 on 7 October, 0.5 on 6 October): the round-4 review fixes (an independent multi-reviewer
-audit of program and service), then one hardening: the mint number a receipt records is cross-checked against the escrow's own
-receipt count on every mint, and the reveal judges "sold out" by that count, so a changed Candy Machine layout stops minting
-instead of writing a wrong mint number.
-The suite (26 cases, real MPL Core, Core Candy Machine and Candy Guard fixtures from mainnet) passes on a local
+Revision 0.5.3 (25 November 2026; 0.5.2 on 1 November, 0.5.1 on 7 October, 0.5 on 6 October): the round-4 review fixes (an
+independent multi-reviewer audit of program and service), then hardening. 0.5.2: the mint number a receipt records is
+cross-checked against the escrow's own receipt count on every mint, and the reveal judges "sold out" by that count, so a
+changed Candy Machine layout stops minting instead of writing a wrong mint number. 0.5.3 (the 9 October verification audit):
+`set_permit` and `set_group` are removed, so nothing but a pause can change a launch after init; the reveal tree is
+positional with a proof of exactly the tree's depth; a burned asset counts as revealed; an address Core no longer owns is a
+gone asset for refunds; while the escrow holds the collection a refund's live asset must be in it. No account layout changed.
+The suite (27 cases, real MPL Core, Core Candy Machine and Candy Guard fixtures from mainnet) passes on a local
 validator. Devnet only. Not independently audited.
 
 ## Money flow
@@ -42,9 +45,10 @@ instruction:
    written so far (the escrow has been the machine's only minter since init), or the mint is refused.
 
 NFI's per-launch permit key co-signs every mint for the policies that live off chain (allowlists, per-account limits).
-A leak of that key lets a wallet skip a policy; it never lets anyone mint without paying. The hot NFI key can rotate it.
-The Candy Guard the SDK creates with the machine is orphaned at init and can no longer mint. Prices are fixed at init;
-a phase that has not started may move or change its limits with the creator's and NFI's signatures (`set_group`).
+A leak of that key lets a wallet skip a policy; it never lets anyone mint without paying. The key is fixed at init: the
+answer to a leaked permit is a pause (hot key), then a cancel (canceller or creator).
+The Candy Guard the SDK creates with the machine is orphaned at init and can no longer mint. Prices, phase times,
+allocations and per-wallet limits are all fixed at init.
 
 ## What the escrow holds besides the money
 
@@ -69,11 +73,14 @@ the machine's authority back once the escrow is final:
 
 A hidden-settings machine must come with a reveal commitment at init: the Merkle root of every item's final
 (mint number, name, URI), leaves `sha256(0x00 | u64 LE mint number | u32 len | name | u32 len | uri)`, nodes
-`sha256(0x01 | smaller | larger)`. A machine with final config lines must not have one. `reveal` is permissionless,
+`sha256(0x01 | left | right)`. The tree is positional and full: leaf i is item i, the leaves are padded with 32 zero
+bytes to the next power of two, and a proof is exactly the tree's depth long (at most 20), so one mint number has one
+leaf. A machine with final config lines must not have one. `reveal` is permissionless,
 waits until minting is over (sold out by the escrow's receipt count, window ended, or not open), accepts only the committed leaf for the asset's mint
 number (recorded on its receipt), runs once per asset, and locks the asset (ImmutableMetadata, no authority): nobody,
 the creator included, can change a revealed asset's name or URI again. The lock sits on each asset, not the collection,
-because a collection-level ImmutableMetadata also refuses the handover of the update authority.
+because a collection-level ImmutableMetadata also refuses the handover of the update authority. A burned asset has
+nothing to reveal: `reveal` counts it with no proof and no write, so a burn cannot hold the collection back.
 
 ## Who may do what
 
@@ -84,8 +91,7 @@ because a collection-level ImmutableMetadata also refuses the handover of the up
 | init | creator (the machine's authority and the collection's update authority) + payout wallet + NFI's hot key | |
 | pay_and_mint | the minter + the launch's permit key | Open, not paused, before window_end, phase open |
 | cancel | the config's **canceller** (cold), or the creator | Open, before window_end |
-| set_paused, set_permit | NFI's hot key | any time; touches minting only |
-| set_group | the creator + NFI's hot key | the phase has not started; never the price |
+| set_paused | NFI's hot key | any time; touches minting only |
 | refund | the asset's owner (burns it); anyone once it is burned (incl. after Core's Collect) | Cancelled |
 | release | anyone | Open, after window_end |
 | release_fee | anyone | Released, once |
@@ -105,8 +111,8 @@ can never hold the creator's share.
 - **Upgrade authority**: anything (replace the program). Must be the NFI Programs multisig with a timelock on mainnet.
 - **Config authority**: rotate the hot key, the canceller and the treasury of FUTURE escrows. Same multisig.
 - **Canceller**: cancel open launches (refunds open; nothing is taken). The multisig on mainnet.
-- **Hot NFI key** (the service): pause minting, rotate permit keys, co-sign inits and phase changes of not-started
-  phases. It cannot cancel, release, refund or move any lamport.
+- **Hot NFI key** (the service): pause minting and co-sign inits. It cannot change a launch, cancel, release, refund
+  or move any lamport.
 - **A permit key**: let a wallet skip an off-chain policy (allowlist, per-account limit) on its launch; never a free mint.
 
 ## Build and test
@@ -120,13 +126,13 @@ bash ops/wsl-build.sh sync && bash ops/wsl-build.sh pin && bash ops/wsl-build.sh
 The value-conservation property test (`tests/audit-property.ts`: a model of every escrow, vault, receipt and counter checked after each of about 12,000 random actions over 4 seeds) runs on its own with `bash ops/wsl-build.sh property`, about 50 minutes, on a validator on private ports; the default `test` runs the suite only.
 
 `--features test` shortens the minimum window to five seconds and the two 30-day grace periods to six seconds so the
-whole life runs in one test. Never on for a deploy: `bash ops/wsl-build.sh build-release` writes the production binary,
-its IDL and its sha256 to `target/prod/`, and `ops/devnet.sh` and `ops/mainnet.sh` deploy only that binary, only if its
-hash matches and its IDL says `MIN_WINDOW_SECS` = 3600. `anchor-lang` is pinned exactly.
+whole life runs in one test. Never on for a deploy. `anchor-lang` is pinned exactly.
 
-**Verifiable build.** `bash ops/wsl-build.sh build-verifiable` builds the production program in the Solana Foundation's
-verifiable-build image (`solanafoundation/solana-verifiable-build:4.2.2`, needs docker) into `target/prod`; deploy those
-bytes. Anyone can then check the deployed program against this repository:
+**Verifiable build, the only production build.** `bash ops/wsl-build.sh build-verifiable` builds the production program
+in the Solana Foundation's verifiable-build image (`solanafoundation/solana-verifiable-build:4.2.2`, needs docker) and
+writes the binary, its IDL and its sha256 to `target/prod/`; it stops, leaving no `target/prod`, if any step fails.
+`ops/devnet.sh` and `ops/mainnet.sh` deploy only that binary, only if its hash matches and its IDL says
+`MIN_WINDOW_SECS` = 3600. Anyone can then check the deployed program against this repository:
 
 ```
 solana-verify verify-from-repo -u devnet --program-id 3qRS59TJmgaNUzKjKsUe3XGggodSXA9GHU9Q5u2ffE1n \
@@ -137,12 +143,24 @@ solana-verify verify-from-repo -u devnet --program-id 3qRS59TJmgaNUzKjKsUe3XGggo
 On devnet the program at commit `e41551d` (revision 0.5.2) verifies (executable hash `4db9da8b…`), with the verification record
 on chain; before it, `c6b7113` (0.5.1, hash `602fe0a6…`).
 
+**Upgrades and account layouts.** `LaunchEscrow`, `MintReceipt` and `MintCounter` carry no version field. An upgrade
+must not change an account layout while any escrow, receipt or counter of the old layout is open: the new program could
+not read them, and their refunds, releases and closes would fail. A layout change waits until every escrow is closed, or
+ships under new seeds. Revisions 0.5.1 to 0.5.3 changed no layout.
+
+**Mainnet handover.** `ops/mainnet.sh handover` accepts one target, the NFI Programs multisig vault pinned in the script,
+and `ops/mainnet.sh confirm` (read-only) must pass before the deployer key is retired: the vault holds the upgrade
+authority and the config authority, and no handover is pending.
+
 ## What a refund cannot do
 
 - **A frozen asset cannot burn.** Core refuses BurnV1 while a FreezeDelegate says frozen (a marketplace listing or a
   staking lock the holder chose). The refund fails cleanly and works after the thaw (tested); the refund UI says
   "unlist or unstake first".
 - **An asset burned outside refund** pays the receipt's minter when anyone cranks the refund, not whoever last held it.
+  The same holds for whatever sits at its address afterwards under another program.
+- **A different asset at a burned asset's address** (created by whoever kept the asset's keypair) earns no refund while
+  the escrow holds the collection: a live asset must be in the launch's collection.
 - **After the 30-day grace** the creator holds the collection again (above).
 
 ## Layout
@@ -152,7 +170,7 @@ programs/nfi_launch_escrow/src
   lib.rs            instruction list
   state.rs          Config, LaunchEscrow, Group, MintReceipt, MintCounter, Vault, constants
   mplcore.rs        MPL Core and Core Candy Machine layouts read by hand, the hand-built CPIs, the reveal Merkle check
-  instructions/     config, init, pay (pay_and_mint, close_counter), admin (cancel, set_paused, set_permit, set_group),
+  instructions/     config, init, pay (pay_and_mint, close_counter), admin (cancel, set_paused),
                     refund, release (+ release_fee, return_collection), reveal, close
 tests/escrow.ts     lifecycle, the round-4 findings, and the TypeScript reveal tree (revealLeaf, revealTree)
 tests/fixtures      mpl_core.so, mpl_core_candy_machine.so, mpl_core_candy_guard.so (mainnet dumps)

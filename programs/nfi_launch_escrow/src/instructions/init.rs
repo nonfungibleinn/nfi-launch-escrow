@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use crate::errors::EscrowError;
 use crate::events::EscrowInitialised;
 use crate::instructions::config::plain_wallet;
-use crate::mplcore::{candy_machine_authority_pda, candy_machine_view, cm_set_authority, cm_set_mint_authority, collection_update_authority, hand_collection, screen_collection, CandyMachineProgram, MplCore, CANDY_MACHINE_ID, MPL_CORE_ID};
+use crate::mplcore::{candy_machine_authority_pda, candy_machine_view, reveal_depth, cm_set_authority, cm_set_mint_authority, collection_update_authority, hand_collection, screen_collection, CandyMachineProgram, MplCore, CANDY_MACHINE_ID, MPL_CORE_ID};
 use crate::state::*;
 
 /// A phase as init takes it (the minted count starts at zero).
@@ -94,6 +94,7 @@ pub fn init(ctx: Context<Init>, args: InitArgs) -> Result<()> {
         require!(m.authority == creator_key && m.collection == ctx.accounts.collection.key(), EscrowError::BadMachine);
         require!(m.items_redeemed == 0 && m.items_available > 0, EscrowError::BadMachine);
         require!(m.hidden == (args.reveal_root != [0u8; 32]), EscrowError::RevealCommitment);
+        require!(!m.hidden || reveal_depth(m.items_available) <= MAX_PROOF, EscrowError::RevealCommitment);
         m.items_available
     };
     {

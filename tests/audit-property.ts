@@ -4,7 +4,7 @@
 // (one plain config-line launch, one with per-wallet limits, allocations and future phases, one hidden-settings launch
 // with a reveal commitment) and several wallets: pay_and_mint in valid and invalid phases/limits/permits/groups, Core
 // transfers, self-burns and Collect on burned shells, refunds by the owner, a non-owner and a crank, cancel by the
-// canceller / the creator / NFI's hot key / stale keys, pause, set_permit, set_group, release and release_fee (also
+// canceller / the creator / NFI's hot key / stale keys, pause, release and release_fee (also
 // fired together at the exact window deadline), reveal (right and wrong proofs, before and after minting ends),
 // return_collection (incl. both grace paths), close_receipt, close_counter, close_escrow, direct mints that bypass the
 // escrow, cross-launch account swaps, stray lamports, config rotations. After EVERY action:
@@ -39,7 +39,6 @@ const MAX_MS = Number(process.env.AUDIT_SEED_MINUTES ?? 22) * 60_000;
 const GRACE = 6; // CANCEL_GRACE_SECS and REVEAL_GRACE_SECS under the test feature
 const LABELS = ["wl", "pub", "og"];
 const PRICES: [number, number][] = [[0, 0], [100_000, 1_000], [1_000_000, 0], [0, 500_000], [50_000_000, 1_000_000], [300_000_000, 6_000_000]];
-const CORE_FAIL = "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d failed";
 const CM_EMPTY = ["CandyMachineEmpty", "Candy machine is empty"];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const label6 = (s: string) => { const b = Buffer.alloc(6); b.write(s); return Array.from(b); };
@@ -50,22 +49,18 @@ const u32 = (n: number) => { const b = Buffer.alloc(4); b.writeUInt32LE(n); retu
 const u64 = (n: number) => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(n)); return b; };
 const sha = (...parts: Buffer[]) => createHash("sha256").update(Buffer.concat(parts)).digest();
 const revealLeaf = (i: number, name: string, uri: string) => sha(Buffer.from([0]), u64(i), u32(Buffer.byteLength(name)), Buffer.from(name), u32(Buffer.byteLength(uri)), Buffer.from(uri));
-const node = (a: Buffer, b: Buffer) => (Buffer.compare(a, b) <= 0 ? sha(Buffer.from([1]), a, b) : sha(Buffer.from([1]), b, a));
+const node = (left: Buffer, right: Buffer) => sha(Buffer.from([1]), left, right);
 const revealTree = (leaves: Buffer[]) => {
+  let depth = 0;
+  while (2 ** depth < leaves.length) depth++;
+  let level: Buffer[] = [...leaves, ...Array.from({ length: 2 ** depth - leaves.length }, () => Buffer.alloc(32))];
   const proofs: Buffer[][] = leaves.map(() => []);
-  let level = leaves.map((h, i) => ({ h, members: [i] }));
-  while (level.length > 1) {
-    const next: typeof level = [];
-    for (let i = 0; i < level.length; i += 2) {
-      const a = level[i]!, b = level[i + 1];
-      if (!b) { next.push(a); continue; }
-      a.members.forEach((m) => proofs[m]!.push(b.h));
-      b.members.forEach((m) => proofs[m]!.push(a.h));
-      next.push({ h: node(a.h, b.h), members: [...a.members, ...b.members] });
-    }
-    level = next;
+  for (let d = 0; d < depth; d++) {
+    const cur = level;
+    proofs.forEach((p, i) => p.push(cur[(i >> d) ^ 1]!));
+    level = Array.from({ length: cur.length / 2 }, (_, i) => node(cur[2 * i]!, cur[2 * i + 1]!));
   }
-  return { root: level[0]!.h, proofs };
+  return { root: level[0]!, proofs };
 };
 
 function rngFrom(seed: number) {
@@ -651,53 +646,6 @@ describe("audit: property test of the round-4 escrow", function () {
       await act(L, "set_paused", `${val} by ${who.n}`, () => send(program.methods.setPaused(val).accounts(nfiEscrowAccounts(L, who.kp)).preInstructions(cu()), [who.kp]), reasons, { onOk: () => { L.paused = val; } });
     };
 
-    const aSetPermit = async (L: Launch) => {
-      const k = rng.f();
-      const who = k < 0.8 ? { kp: cfg.nfi, n: "nfi" } : k < 0.9 ? { kp: cfg.oldNfi, n: "staleNfi" } : { kp: L.creator.kp, n: "creator" };
-      const toDefault = rng.chance(0.08);
-      const next = Keypair.generate();
-      const p = toDefault ? PublicKey.default : next.publicKey;
-      const reasons = () => {
-        if (L.status === "closed") return ["AccountNotInitialized"];
-        const r: string[] = [];
-        if (who.n !== "nfi") r.push("NotNfi");
-        if (toDefault) r.push("BadConfig");
-        return r;
-      };
-      await act(L, "set_permit", `${toDefault ? "default key" : "new key"} by ${who.n}`, () => send(program.methods.setPermit(p).accounts(nfiEscrowAccounts(L, who.kp)).preInstructions(cu()), [who.kp]), reasons, {
-        onOk: () => { L.stalePermit = L.permit; L.permit = next; },
-      });
-    };
-
-    const aSetGroup = async (L: Launch) => {
-      const k = rng.f();
-      const signers = k < 0.8 ? { nfi: cfg.nfi, cr: L.creator.kp, n: "nfi+creator" } : k < 0.9 ? { nfi: cfg.oldNfi, cr: L.creator.kp, n: "staleNfi+creator" } : { nfi: cfg.nfi, cr: stranger, n: "nfi+stranger" };
-      const gi = rng.chance(0.08) ? L.groups.length + rng.int(3) : rng.int(L.groups.length);
-      const t = await chainTime("processed");
-      const start = t + rng.int(18) - 2;
-      const endK = rng.f();
-      const end = endK < 0.45 ? 0 : endK < 0.85 ? start + 3 + rng.int(15) : start - 1;
-      const perWallet = rng.pick([0, 1, 2, 3]);
-      const allocation = rng.pick([0, 1, 2, 4, 8]);
-      const reasons = (now: number) => {
-        if (L.status === "closed") return ["AccountNotInitialized"];
-        const r: string[] = [];
-        if (signers.n === "staleNfi+creator") r.push("NotNfi");
-        if (signers.n === "nfi+stranger") r.push("NotCreator");
-        if (L.status !== "open") r.push("NotOpen");
-        const g = L.groups[gi];
-        if (!g) { r.push("BadGroup"); return r; }
-        if (!(now < g.start && start > now)) r.push("PhaseStarted");
-        if (!(start < L.windowEnd && (end === 0 || (end > start && end <= L.windowEnd)))) r.push("BadPhase");
-        return r;
-      };
-      await act(L, "set_group", `g${gi} start=${start - t} end=${end ? end - t : 0} pw=${perWallet} alloc=${allocation} by ${signers.n}`,
-        () => send(program.methods.setGroup(gi, new BN(start), new BN(end), perWallet, allocation).accounts({ config: configPda, escrow: L.escrow, nfiAuthority: signers.nfi.publicKey, creator: signers.cr.publicKey } as any).preInstructions(cu()), [signers.nfi, signers.cr]), reasons, {
-          extraT: [start],
-          onOk: () => { const g = L.groups[gi]!; g.start = start; g.end = end; g.perWallet = perWallet; g.allocation = allocation; },
-        });
-    };
-
     const revealIx = (L: Launch, a: Asset, name: string, uri: string, proof: Buffer[]) =>
       program.methods.reveal(name, uri, proof.map((p) => Array.from(p))).accounts({ escrow: L.escrow, receipt: receiptPda(L.escrow, a.key), asset: a.key, collection: L.m.collection, candyMachine: L.m.cm, payer: cranker.publicKey, mplCoreProgram: CORE, systemProgram: SystemProgram.programId } as any).preInstructions(cu());
     const aReveal = async (L: Launch, forced?: Asset) => {
@@ -719,13 +667,13 @@ describe("audit: property test of the round-4 escrow", function () {
         if (a.rec.revealed) r.push("AlreadyRevealed");
         const mintingOver = L.status !== "open" || t >= L.windowEnd || L.receipts >= L.m.items;
         if (!mintingOver) r.push("MintingNotOver");
-        if (variant !== "right") r.push("BadRevealProof");
-        if (r.length === 0 && a.state !== "live") r.push(CORE_FAIL); // the asset is burned: Core refuses the update
+        if (variant !== "right" && a.state === "live") r.push("BadRevealProof"); // a burned asset is counted with no proof (0.5.3)
         return r;
       };
       await act(L, "reveal", `${a.key.toBase58().slice(0, 6)} #${i} ${variant} (${a.state}${a.rec.revealed ? ", revealed" : ""})`, () => send(revealIx(L, a, name, uri, proof), [cranker]), reasons, {
         onOk: async () => {
           a.rec.revealed = true; L.revealed++;
+          if (a.state !== "live") return;
           const x = await fetchAsset(crankerW.umi, upk(a.key));
           need(x.uri === L.finals[i]!.uri && x.name === L.finals[i]!.name, "reveal did not write the committed metadata");
           need(x.immutableMetadata !== undefined, "the revealed asset is not locked");
@@ -966,8 +914,6 @@ describe("audit: property test of the round-4 escrow", function () {
         [st === "released" ? 5 : 1.2, () => aReleaseFee(L)],
         [st === "open" ? 1.0 : 0.6, () => aCancel(L)],
         [2.2, () => aPause(L)],
-        [1.2, () => aSetPermit(L)],
-        [st === "open" ? 2.5 : 0.6, () => aSetGroup(L)],
         [hasReveal(L) ? (st === "open" ? 3 : 8) : 0.6, () => aReveal(L)],
         [st === "released" ? 10 : 1.5, () => aCloseReceipt(L)],
         [st !== "open" ? 2.5 : 0.8, () => aCloseCounter(L)],

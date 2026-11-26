@@ -3,7 +3,7 @@
 //! the creator cancels first, every payment may be taken back, forever, by burning the asset in the same instruction.
 //! The escrow is the Candy Machine's authority and mint authority and the collection's update authority from init:
 //! the only way to mint is pay_and_mint, which takes the payment, writes the receipt and mints in one instruction. NFI's
-//! hot key can pause minting and co-sign policy, never cancel or move money. See the Launchpad blueprint, "Phase 2b
+//! hot key can pause minting and co-sign an escrow's creation, never cancel or move money. See the Launchpad blueprint, "Phase 2b
 //! design", and the round-4 review (nfi-security-audit/apps/launch).
 #![allow(clippy::too_many_arguments)]
 #![allow(deprecated)]
@@ -41,10 +41,6 @@ pub mod nfi_launch_escrow {
     pub fn cancel(ctx: Context<Cancel>) -> Result<()> { instructions::cancel(ctx) }
     /// NFI's hot key: blocks pay_and_mint only; moves nothing.
     pub fn set_paused(ctx: Context<NfiEscrow>, paused: bool) -> Result<()> { instructions::set_paused(ctx, paused) }
-    /// NFI's hot key: a new per-launch permit key.
-    pub fn set_permit(ctx: Context<NfiEscrow>, permit: Pubkey) -> Result<()> { instructions::set_permit(ctx, permit) }
-    /// The creator and NFI's hot key: move or re-limit a phase that has not started. Prices never change.
-    pub fn set_group(ctx: Context<SetGroup>, group: u8, start: i64, end: i64, per_wallet: u16, allocation: u32) -> Result<()> { instructions::set_group(ctx, group, start, end, per_wallet, allocation) }
     /// After a cancel: the asset's owner burns it and is paid in full; once it is gone, anyone cranks and the minter is paid.
     pub fn refund(ctx: Context<Refund>) -> Result<()> { instructions::refund(ctx) }
     /// Anyone, once the window ended: the vault pays the payout wallet.

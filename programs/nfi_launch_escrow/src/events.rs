@@ -61,23 +61,6 @@ pub struct PausedChanged {
 }
 
 #[event]
-pub struct PermitChanged {
-    pub escrow: Pubkey,
-    pub permit: Pubkey,
-}
-
-#[event]
-pub struct GroupChanged {
-    pub escrow: Pubkey,
-    pub group: u8,
-    pub label: [u8; 6],
-    pub start: i64,
-    pub end: i64,
-    pub per_wallet: u16,
-    pub allocation: u32,
-}
-
-#[event]
 pub struct Revealed {
     pub escrow: Pubkey,
     pub asset: Pubkey,
